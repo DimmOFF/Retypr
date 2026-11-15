@@ -1,0 +1,50 @@
+name: CI
+
+# Runs on every push and pull request: unit tests + a release build check.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# a newer push cancels the older run of the same branch
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, experimental: false }
+          # the macOS and Linux ports are still early: failures there do not fail the workflow
+          - { os: macos-latest, experimental: true }
+          - { os: ubuntu-latest, experimental: true }
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxtst-dev libxi-dev libxkbcommon-dev \
+            libxdo-dev libevdev-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Unit tests
+        run: cargo test
+
+      - name: Release build
+        run: cargo build --release

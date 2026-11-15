@@ -136,3 +136,6 @@ caret_after_convert    = "right" # "left" или "right" — с какой ст�
 `NOTARY_PROFILE` (нотаризация через notarytool), `LSUIELEMENT=false` (показывать иконку в Dock).
 Если установлен `create-dmg` (`brew install create-dmg`), окно образа получается с красивой раскладкой.
 Ограничения macOS-версии: нет значка в строке меню и окна настроек, не реализовано переключение системной раскладки.
+
+## CI и релизы
+GitHub Actions (проверка при каждом коммите и сборка релизов по тегу `v*`): см. [RELEASING.md](RELEASING.md).

@@ -1,0 +1,7 @@
+* text=auto
+# scripts must keep their line endings, otherwise they break on the target OS
+*.sh  text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.ico binary
+*.png binary
