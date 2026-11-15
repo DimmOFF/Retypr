@@ -1,5 +1,5 @@
 //! Нативный Windows-бэкенд: WH_KEYBOARD_LL / WH_MOUSE_LL, SendInput, раскладки (HKL).
-use super::{KeyEvent, LayoutId, K};
+use super::{caret_plan, AfterConvert, KeyEvent, LayoutId, Step, K};
 use crate::hotkey::{DIGITS, FKEYS, LETTERS};
 use crate::layout_map::Lang;
 use anyhow::{anyhow, Result};
@@ -50,6 +50,7 @@ const VK_CONTROL: u16 = 0x11;
 const VK_LSHIFT: u16 = 0xA0;
 const VK_RSHIFT: u16 = 0xA1;
 const VK_LEFT: u16 = 0x25;
+const VK_RIGHT: u16 = 0x27;
 const VK_C: u16 = 0x43;
 const VK_V: u16 = 0x56;
 
@@ -381,7 +382,7 @@ pub fn replace_typed(erase: usize, text: &str, to: LayoutId) -> Result<()> {
 /// Shift+Pause: скопировать выделение, отдать его в `f`, вставить результат,
 /// (опционально) выделить вставленное заново, вернуть буфер обмена.
 /// `f(selected, current_layout) -> Some((new_text, target_layout))`.
-pub fn convert_selection<F>(reselect: bool, f: F) -> Result<()>
+pub fn convert_selection<F>(after: AfterConvert, f: F) -> Result<()>
 where
     F: FnOnce(&str, LayoutId) -> Option<(String, LayoutId)>,
 {
@@ -413,14 +414,24 @@ where
             sleep(Duration::from_millis(200)); // приложение должно успеть прочитать буфер
             switch_to(target)?;
 
-            if reselect {
-                let n = conv.replace("\r\n", "\n").chars().count();
-                let mut v = vec![vk(VK_LSHIFT, false)];
-                for _ in 0..n {
-                    v.push(vk_ext(VK_LEFT, false));
-                    v.push(vk_ext(VK_LEFT, true));
+            // caret position / keep or drop the selection (see os::caret_plan)
+            let n = conv.replace("\r\n", "\n").chars().count();
+            let mut v = Vec::new();
+            for step in caret_plan(after, n) {
+                match step {
+                    Step::ShiftDown => v.push(vk(VK_LSHIFT, false)),
+                    Step::ShiftUp => v.push(vk(VK_LSHIFT, true)),
+                    Step::Left => {
+                        v.push(vk_ext(VK_LEFT, false));
+                        v.push(vk_ext(VK_LEFT, true));
+                    }
+                    Step::Right => {
+                        v.push(vk_ext(VK_RIGHT, false));
+                        v.push(vk_ext(VK_RIGHT, true));
+                    }
                 }
-                v.push(vk(VK_LSHIFT, true));
+            }
+            if !v.is_empty() {
                 send(&v);
             }
         }

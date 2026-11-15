@@ -3,7 +3,7 @@ use crate::{
     detector::Detector,
     hotkey::{Action, Bindings},
     layout_map::Lang,
-    os::{self, KeyEvent, LayoutId, K},
+    os::{self, AfterConvert, KeyEvent, LayoutId, K},
     sound::{SoundEvent, Sounds},
     state,
 };
@@ -68,7 +68,7 @@ pub struct Engine {
     det: Arc<Detector>,
     sounds: Arc<Sounds>,
     busy: Arc<AtomicBool>,
-    reselect: bool,
+    after: AfterConvert,
     rules: Rules,
     mode: AppMode,
     keys: Bindings,
@@ -113,7 +113,7 @@ impl Engine {
         self.keys = keys;
         self.det = Arc::new(det);
         self.sounds = Arc::new(Sounds::new(cfg.sounds.clone()));
-        self.reselect = cfg.reselect_after_convert;
+        self.after = AfterConvert::from_config(cfg);
         self.auto_langs = parse_langs(cfg);
         self.swallowed.clear();
         self.reset();
@@ -127,7 +127,7 @@ impl Engine {
         Self {
             det: Arc::new(Detector::new(&cfg)),
             sounds: Arc::new(Sounds::new(cfg.sounds.clone())),
-            reselect: cfg.reselect_after_convert,
+            after: AfterConvert::from_config(&cfg),
             busy: Arc::new(AtomicBool::new(false)),
             rules,
             mode,
@@ -349,9 +349,9 @@ impl Engine {
     fn cycle_selection(&mut self) {
         let st = self.sel.clone();
         let sounds = self.sounds.clone();
-        let reselect = self.reselect;
+        let after = self.after;
         run_busy(&self.busy, move || {
-            os::convert_selection(reselect, move |sel, cur| {
+            os::convert_selection(after, move |sel, cur| {
                 let mut g = st.lock().unwrap_or_else(|p| p.into_inner());
                 // Продолжаем цикл, только если выделен ровно тот текст, что мы вставили
                 let (origin_text, origin, shown) = match g.as_ref() {

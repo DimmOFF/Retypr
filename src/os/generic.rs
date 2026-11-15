@@ -1,6 +1,6 @@
 //! Linux/macOS: best-effort через rdev + enigo. Раскладок «две»: 0 = EN, 1 = RU
 //! (системный список раскладок здесь пока не читается; Windows использует нативный бэкенд).
-use super::{KeyEvent, LayoutId, K};
+use super::{caret_plan, AfterConvert, KeyEvent, LayoutId, Step, K};
 use crate::layout_map::{self, Lang};
 use anyhow::{bail, Result};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
@@ -95,7 +95,7 @@ pub fn replace_typed(erase: usize, text: &str, to: LayoutId) -> Result<()> {
     switch_to(to)
 }
 
-pub fn convert_selection<F>(reselect: bool, f: F) -> Result<()>
+pub fn convert_selection<F>(after: AfterConvert, f: F) -> Result<()>
 where
     F: FnOnce(&str, LayoutId) -> Option<(String, LayoutId)>,
 {
@@ -119,12 +119,13 @@ where
             e.key(modk, Direction::Release)?;
             sleep(Duration::from_millis(150));
             let _ = switch_to(target);
-            if reselect {
-                e.key(Key::Shift, Direction::Press)?;
-                for _ in 0..conv.replace("\r\n", "\n").chars().count() {
-                    e.key(Key::LeftArrow, Direction::Click)?;
+            for step in caret_plan(after, conv.replace("\r\n", "\n").chars().count()) {
+                match step {
+                    Step::ShiftDown => e.key(Key::Shift, Direction::Press)?,
+                    Step::ShiftUp => e.key(Key::Shift, Direction::Release)?,
+                    Step::Left => e.key(Key::LeftArrow, Direction::Click)?,
+                    Step::Right => e.key(Key::RightArrow, Direction::Click)?,
                 }
-                e.key(Key::Shift, Direction::Release)?;
             }
         }
     }

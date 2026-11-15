@@ -2,7 +2,7 @@
 //! It writes config.toml; the running Retypr picks changes up on its own (within ~1 second).
 use crate::{
     autostart,
-    config::{Config, HotkeysConfig},
+    config::{CaretSide, Config, HotkeysConfig},
     hotkey::{self, Hotkey},
     icon,
     sound::Sounds,
@@ -500,14 +500,30 @@ impl App {
                 chip(ui, pal, "English", &mut self.langs[0]);
             });
         });
-        section(ui, "Conversion");
+        section(ui, "Converting selected text");
         card(ui, pal, |ui| {
             row(
                 ui,
-                "Keep selection after converting",
-                "Lets you press the hotkey again to cycle to the next layout.",
+                "Remove selection after converting",
+                "Off: the text stays selected, so pressing the hotkey again cycles to the next layout.",
                 |ui| {
-                    toggle(ui, &mut self.cfg.reselect_after_convert);
+                    toggle(ui, &mut self.cfg.deselect_after_convert);
+                },
+            );
+            divider(ui);
+            row(
+                ui,
+                "Caret position after converting",
+                "Which end of the converted text the cursor ends up at. With the selection kept, it is the active end of the selection.",
+                |ui| {
+                    let left = self.cfg.caret_after_convert == CaretSide::Left;
+                    // right-to-left layout: add Right first to show Left · Right
+                    if choice_chip(ui, pal, "Right", !left) {
+                        self.cfg.caret_after_convert = CaretSide::Right;
+                    }
+                    if choice_chip(ui, pal, "Left", left) {
+                        self.cfg.caret_after_convert = CaretSide::Left;
+                    }
                 },
             );
         });

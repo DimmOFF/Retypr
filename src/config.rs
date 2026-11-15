@@ -14,6 +14,14 @@ pub struct SoundConfig {
     pub on_rule_toggle: Option<PathBuf>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CaretSide {
+    Left,
+    #[default]
+    Right,
+}
+
 /// Горячие клавиши: "Pause", "Shift+Pause", "Ctrl+Alt+F12", "Win+Scroll Lock"…
 /// Модификаторы: Ctrl, Alt, Shift, Win. Клавиши: Pause, Break, ScrollLock, CapsLock, Insert, Delete, Home, End,
 /// PageUp, PageDown, PrintScreen, Menu, Space, Tab, Enter, Esc, стрелки, F1–F24, A–Z, 0–9, Grave (`).
@@ -41,8 +49,11 @@ impl Default for HotkeysConfig {
 #[serde(default)]
 pub struct Config {
     pub auto_switch: bool,
-    /// После Shift+Pause снова выделять вставленный текст (чтобы можно было листать раскладки дальше)
-    pub reselect_after_convert: bool,
+    /// After converting selected text: remove the selection (default: keep it, so the hotkey can be pressed
+    /// again to cycle to the next layout).
+    pub deselect_after_convert: bool,
+    /// After converting selected text: put the caret at the "left" or "right" end of the converted text.
+    pub caret_after_convert: CaretSide,
     /// Settings window theme: "system", "light" or "dark"
     pub theme: String,
     pub min_word_len: usize,
@@ -62,7 +73,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             auto_switch: true,
-            reselect_after_convert: true,
+            deselect_after_convert: false,
+            caret_after_convert: CaretSide::Right,
             theme: "system".into(),
             min_word_len: 3,
             auto_languages: vec!["en".into(), "ru".into(), "uk".into()],
