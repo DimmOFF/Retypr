@@ -1,7 +1,10 @@
-//! Linux/macOS: best-effort через rdev + enigo. Раскладок «две»: 0 = EN, 1 = RU
-//! (системный список раскладок здесь пока не читается; Windows использует нативный бэкенд).
+//! Linux/macOS: best effort via rdev + enigo. Only two layouts are assumed: 0 = EN, 1 = RU
+//! (the system layout list is not read here yet; Windows uses its native backend).
 use super::{caret_plan, AfterConvert, KeyEvent, LayoutId, Step, K};
-use crate::layout_map::{self, Lang};
+use crate::{
+    lang::Lang,
+    layout_map,
+};
 use anyhow::{bail, Result};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use rdev::{EventType, Key as RKey};
@@ -60,8 +63,9 @@ where
 pub fn current_layout() -> LayoutId { 0 }
 pub fn next_layout(id: LayoutId) -> LayoutId { if id == 0 { 1 } else { 0 } }
 pub fn layouts() -> Vec<LayoutId> { vec![0, 1] }
+pub fn installed_languages() -> Vec<Lang> { vec![Lang::EN, Lang::RU] }
 pub fn layout_lang(id: LayoutId) -> Option<Lang> {
-    match id { 0 => Some(Lang::En), 1 => Some(Lang::Ru), _ => None }
+    match id { 0 => Some(Lang::EN), 1 => Some(Lang::RU), _ => None }
 }
 pub fn convert(text: &str, from: LayoutId, to: LayoutId) -> String {
     match (layout_lang(from), layout_lang(to)) {
@@ -73,7 +77,7 @@ pub fn convert(text: &str, from: LayoutId, to: LayoutId) -> String {
 pub fn switch_to(_id: LayoutId) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        // X11 + xkb-switch (переключает на следующую раскладку)
+        // X11 + xkb-switch (switches to the next layout)
         let st = std::process::Command::new("xkb-switch").arg("-n").status()?;
         if !st.success() {
             bail!("xkb-switch failed");
@@ -143,7 +147,7 @@ pub fn fatal(msg: &str) {
     eprintln!("Retypr: {msg}");
 }
 
-/// Имя exe активного окна (на Linux/macOS пока не определяется).
+/// Exe name of the focused window (not detected on Linux/macOS yet).
 pub fn foreground_app() -> String {
     String::new()
 }

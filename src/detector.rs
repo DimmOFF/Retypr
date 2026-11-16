@@ -1,16 +1,18 @@
-//! Решает, набрано ли слово в неправильной раскладке, и ВЫБИРАЕТ раскладку, в которую нужно переключиться
-//! (поддерживаются EN, RU, UK — любые комбинации установленных в системе раскладок).
+//! Decides whether a word was typed in the wrong layout and PICKS the layout to switch to.
+//! It works with whatever layouts are installed in the system (any languages).
 //!
-//! Для каждой раскладки-кандидата:
-//!  1. Защитные фильтры: цифры, смешанные алфавиты, АКРОНИМЫ, исключения, спецсимволы кода.
-//!  2. Словари: слово известно в своём языке → не трогаем совсем;
-//!     его конвертация известна в языке кандидата → кандидат подтверждён словарём.
-//!  3. Иначе строгая эвристика: оригинал фонетически невозможен, а конвертация — возможна.
-//! Побеждает кандидат, подтверждённый словарём; если таких нет — первый по порядку раскладок системы.
+//! For every candidate layout:
+//!  1. Safety filters: digits, mixed scripts, ACRONYMS, exceptions, code-like characters.
+//!  2. Dictionaries (dict/<code>.txt): the word is known in its own language -> leave it alone;
+//!     its conversion is known in the candidate's language -> confirmed by the dictionary.
+//!  3. Otherwise, built-in rules (English, Russian, Ukrainian only) for layouts of DIFFERENT scripts:
+//!     the original is phonetically impossible while the conversion is possible.
+//!     Other languages are detected by dictionary only.
+//! A dictionary-confirmed candidate wins; otherwise the first rule-based one (in system layout order).
 use crate::{
     config::Config,
-    layout_map::{self, Lang},
-    os::LayoutId,
+    lang::Lang,
+    os::{self, LayoutId},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -27,7 +29,7 @@ fn norm(s: &str) -> String {
     s.to_lowercase().replace('ё', "е").replace(['’', 'ʼ'], "'")
 }
 
-/// Словарь: по слову в строке; допускается формат «слово частота» (FrequencyWords); `#` — комментарий.
+/// Dictionary file: one word per line; "word count" lines (FrequencyWords) are fine; `#` starts a comment.
 fn load(path: PathBuf) -> HashSet<String> {
     std::fs::read_to_string(path)
         .map(|s| {
@@ -45,13 +47,17 @@ fn load(path: PathBuf) -> HashSet<String> {
         .unwrap_or_default()
 }
 
-/// Символы, которые в другой раскладке становятся буквами ([ ] ; ' , . ` и т.д.), плюс дефис.
+/// Characters that become letters in another layout ([ ] ; ' , . ` etc.), plus the hyphen.
 fn letter_like(c: char) -> bool {
     c.is_alphabetic() || "[];',.`{}:\"<>~-".contains(c)
 }
 
+fn is_latin_char(c: char) -> bool {
+    c.is_alphabetic() && (c as u32) < 0x250
+}
+
 enum Verdict {
-    /// слово корректно в своём языке — не конвертировать вообще
+    /// the word is fine in its own language - do not convert at all
     Own,
     No,
     Convert { by_dict: bool },
@@ -59,24 +65,25 @@ enum Verdict {
 
 impl Detector {
     pub fn new(cfg: &Config) -> Self {
-        let dir = cfg.dict_dir.clone().or_else(|| Config::dir().map(|d| d.join("dict")));
+        let dir = cfg.dict_path();
         let mut dicts = HashMap::new();
-        let mut exc = HashSet::new();
-        if let Some(d) = dir {
-            for (lang, file) in [(Lang::En, "en.txt"), (Lang::Ru, "ru.txt"), (Lang::Uk, "uk.txt")] {
-                let set = load(d.join(file));
-                log::info!("словарь {lang:?}: {} слов", set.len());
-                if !set.is_empty() {
-                    dicts.insert(lang, set);
-                }
+        // load only dictionaries of languages that have an installed layout and are enabled
+        let mut seen = HashSet::new();
+        for lang in os::layouts().into_iter().filter_map(os::layout_lang) {
+            if !seen.insert(lang) || cfg.is_language_disabled(lang) {
+                continue;
             }
-            exc = load(d.join("exceptions.txt"));
+            let set = load(dir.join(format!("{}.txt", lang.code())));
+            log::info!("dictionary {}: {} words", lang.code(), set.len());
+            if !set.is_empty() {
+                dicts.insert(lang, set);
+            }
         }
-        Self { dicts, exc, min_len: cfg.min_word_len }
+        Self { dicts, exc: load(dir.join("exceptions.txt")), min_len: cfg.min_word_len }
     }
 
-    /// Выбрать раскладку, в которую нужно переключить слово `word`, набранное в раскладке `from`.
-    /// `conv(text, from, to)` — перевод текста между раскладками (на Windows — через сами раскладки).
+    /// Pick the layout to which `word`, typed in layout `from`, should be switched.
+    /// `conv(text, from, to)` converts text between layouts (on Windows: through the system layouts).
     pub fn pick_target<F>(
         &self,
         word: &str,
@@ -99,7 +106,7 @@ impl Detector {
             if c.len() != chars.len() {
                 continue;
             }
-            // Хвостовая пунктуация (до 3 знаков), не буква ни в одной раскладке: «ghbdtn!» → «ghbdtn»
+            // Trailing punctuation (up to 3 marks) that is not a letter in either layout: "ghbdtn!" -> "ghbdtn"
             let mut n = 0;
             while n < 3 && n < chars.len() {
                 let i = chars.len() - 1 - n;
@@ -112,7 +119,7 @@ impl Detector {
             let core_o: String = chars[..chars.len() - n].iter().collect();
             let core_c: String = c[..c.len() - n].iter().collect();
             if !core_o.chars().all(letter_like) {
-                continue; // скобки, слэши, @ и т.п. внутри — это код/путь/адрес
+                continue; // brackets, slashes, @ and the like inside: code, a path or an address
             }
             match self.eval(&core_o, fl, &core_c, tl) {
                 Verdict::Own => return None,
@@ -136,14 +143,15 @@ impl Detector {
         if o.chars().count() < self.min_len {
             return Verdict::No;
         }
-        let has_cyr = o.chars().any(layout_map::is_cyrillic);
-        let has_lat = o.chars().any(|ch| ch.is_ascii_alphabetic());
-        if has_cyr == has_lat || has_cyr != fl.is_cyrillic() {
-            return Verdict::No; // смесь алфавитов, нет букв или слово не того алфавита, что раскладка
+        // the word must be written in one script, and it must be the script of its layout's language
+        let letters: Vec<char> = o.chars().filter(|ch| ch.is_alphabetic()).collect();
+        let all_latin = letters.iter().all(|&ch| is_latin_char(ch));
+        let none_latin = letters.iter().all(|&ch| !is_latin_char(ch));
+        if letters.is_empty() || all_latin == none_latin || all_latin != fl.is_latin() {
+            return Verdict::No;
         }
-        // АКРОНИМЫ (USB, TCP) не трогаем
-        let alpha: Vec<char> = o.chars().filter(|ch| ch.is_alphabetic()).collect();
-        if alpha.len() >= 2 && alpha.iter().all(|ch| ch.is_uppercase()) {
+        // ACRONYMS (USB, TCP) are left alone
+        if letters.len() >= 2 && letters.iter().all(|ch| ch.is_uppercase()) {
             return Verdict::No;
         }
         let (ol, cl) = (norm(o), norm(c));
@@ -160,8 +168,10 @@ impl Detector {
                 }
             }
         }
-        // слово неизвестно словарям (имя, сленг) либо словарей нет — строгая эвристика
-        if implausible(o, fl) && !implausible(c, tl) {
+        // Unknown to the dictionaries (names, slang) or no dictionaries: strict rules, and only between
+        // layouts of different scripts (Latin <-> non-Latin). Same-script pairs rely on dictionaries alone.
+        let cross_script = fl.is_latin() != tl.is_latin();
+        if cross_script && implausible(o, fl) && !implausible(c, tl) {
             Verdict::Convert { by_dict: false }
         } else {
             Verdict::No
@@ -169,11 +179,16 @@ impl Detector {
     }
 }
 
+/// Built-in rules exist for English, Russian and Ukrainian; other languages never look "implausible".
 fn implausible(w: &str, l: Lang) -> bool {
-    match l {
-        Lang::En => bad_en(w),
-        Lang::Ru => bad_ru(w),
-        Lang::Uk => bad_uk(w),
+    if l == Lang::EN {
+        bad_en(w)
+    } else if l == Lang::RU {
+        bad_ru(w)
+    } else if l == Lang::UK {
+        bad_uk(w)
+    } else {
+        false
     }
 }
 
@@ -187,8 +202,8 @@ const BAD_EN: &[&str] = &[
     "zd", "zf", "zg", "zj", "zk", "zp", "zq", "zr", "zv", "zx",
 ];
 
-/// «Не английское»: нет гласных, ≥5 согласных подряд, невозможные биграммы, тройные буквы,
-/// а также `[`, `]`, `;` перед буквой (это клавиши х, ъ/ї, ж русской/украинской раскладки).
+/// "Not English": no vowels, 5+ consonants in a row, impossible bigrams, triple letters, and `[`, `]`, `;`
+/// before a letter (those are the Cyrillic keys х, ъ/ї, ж).
 fn bad_en(w: &str) -> bool {
     let lw: Vec<char> = w.to_lowercase().chars().collect();
     for i in 0..lw.len().saturating_sub(1) {
@@ -231,8 +246,8 @@ const RU_VOW: &str = "аеёиоуыэюя";
 const RU_CONS: &str = "бвгджзйклмнпрстфхцчшщ";
 const BAD_RU: &[&str] = &["жы", "шы", "щы", "чы", "щю", "чя", "щя", "жя", "шя"];
 
-/// «Не русское»: начинается с ъ/ы/ь, кончается на ъ, нет гласных, ≥5 согласных подряд,
-/// гласная перед ы/ь/ъ, ъ не перед е/ё/ю/я, невозможные сочетания (жы, шы, чя…).
+/// "Not Russian": starts with ъ/ы/ь, ends with ъ, no vowels, 5+ consonants in a row, a vowel before ы/ь/ъ,
+/// ъ not before е/ё/ю/я, impossible pairs (жы, шы, чя...).
 fn bad_ru(w: &str) -> bool {
     let l: Vec<char> = w
         .to_lowercase()
@@ -276,8 +291,8 @@ fn bad_ru(w: &str) -> bool {
 const UK_VOW: &str = "аеєиіїоуюя";
 const UK_CONS: &str = "бвгґджзйклмнпрстфхцчшщ";
 
-/// «Не украинское»: есть ы/э/ъ/ё (в украинском их нет), начинается с ь, нет гласных,
-/// ≥5 согласных подряд, гласная перед ь. Апостроф (') допустим внутри слова.
+/// "Not Ukrainian": contains ы/э/ъ/ё (absent from the alphabet), starts with ь, no vowels,
+/// 5+ consonants in a row, a vowel before ь. The apostrophe is fine inside a word.
 fn bad_uk(w: &str) -> bool {
     let lw = w.to_lowercase();
     if lw.contains(['ы', 'э', 'ъ', 'ё']) {
@@ -318,16 +333,20 @@ fn bad_uk(w: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout_map;
 
-    const EN: (LayoutId, Lang) = (1, Lang::En);
-    const RU: (LayoutId, Lang) = (2, Lang::Ru);
-    const UK: (LayoutId, Lang) = (3, Lang::Uk);
+    const DE: Lang = Lang(0x07);
+    const EN: (LayoutId, Lang) = (1, Lang::EN);
+    const RU: (LayoutId, Lang) = (2, Lang::RU);
+    const UK: (LayoutId, Lang) = (3, Lang::UK);
+    const GER: (LayoutId, Lang) = (4, DE);
 
     fn lang(id: LayoutId) -> Lang {
         match id {
-            1 => Lang::En,
-            2 => Lang::Ru,
-            _ => Lang::Uk,
+            1 => Lang::EN,
+            2 => Lang::RU,
+            3 => Lang::UK,
+            _ => DE,
         }
     }
     fn conv(t: &str, f: LayoutId, to: LayoutId) -> String {
@@ -358,9 +377,9 @@ mod tests {
         assert_eq!(pick(&d, "ntrcn", EN, &c), Some(2)); // текст
         assert_eq!(pick(&d, "hello", EN, &c), None);
         assert_eq!(pick(&d, "привет", RU, &[EN]), None);
-        assert_eq!(pick(&d, "TCP", EN, &c), None); // акроним
+        assert_eq!(pick(&d, "TCP", EN, &c), None); // acronym
         assert_eq!(pick(&d, "USB", EN, &c), None);
-        assert_eq!(pick(&d, "ok", EN, &c), None); // короткое
+        assert_eq!(pick(&d, "ok", EN, &c), None); // too short
     }
 
     #[test]
@@ -374,22 +393,40 @@ mod tests {
     #[test]
     fn dict_picks_right_language() {
         let d = det(&[
-            (Lang::En, &["hello", "world"]),
-            (Lang::Ru, &["привет", "мир"]),
-            (Lang::Uk, &["привіт", "світ"]),
+            (Lang::EN, &["hello", "world"]),
+            (Lang::RU, &["привет", "мир"]),
+            (Lang::UK, &["привіт", "світ"]),
         ]);
         let c = [RU, UK];
-        assert_eq!(pick(&d, "ghbdtn", EN, &c), Some(2)); // привет → RU
-        assert_eq!(pick(&d, "ghbdsn", EN, &c), Some(3)); // привіт → UK
-        assert_eq!(pick(&d, "ghbdtn!", EN, &c), Some(2)); // хвостовая пунктуация
-        assert_eq!(pick(&d, "hello", EN, &c), None); // слово корректно в своём языке
-        assert_eq!(pick(&d, "руддщ", RU, &[EN, UK]), Some(1)); // hello, набрано в RU
+        assert_eq!(pick(&d, "ghbdtn", EN, &c), Some(2)); // привет -> RU
+        assert_eq!(pick(&d, "ghbdsn", EN, &c), Some(3)); // привіт -> UK
+        assert_eq!(pick(&d, "ghbdtn!", EN, &c), Some(2)); // trailing punctuation
+        assert_eq!(pick(&d, "hello", EN, &c), None); // fine in its own language
+        assert_eq!(pick(&d, "руддщ", RU, &[EN, UK]), Some(1)); // "hello" typed in the Russian layout
         assert_eq!(pick(&d, "привіт", UK, &[EN, RU]), None);
     }
 
     #[test]
+    fn other_scripts_need_a_dictionary() {
+        // No built-in rules for German: without a dictionary nothing is converted...
+        let none = det(&[]);
+        assert_eq!(pick(&none, "ghbdtn", EN, &[GER]), None);
+        // ...and Latin<->Latin pairs never use the rules, only dictionaries
+        let d = det(&[(Lang::EN, &["hello"]), (DE, &["hallo"])]);
+        assert_eq!(pick(&d, "hello", EN, &[GER]), None);
+    }
+
+    #[test]
+    fn non_latin_to_latin_without_rules_for_target() {
+        // Russian layout -> a language we have no rules for: needs its dictionary
+        let d = det(&[(Lang::RU, &["привет"]), (DE, &["hallo"])]);
+        // "hallo" typed on the Russian layout is "руддщ"-like; here we only check the dictionary route exists
+        assert_eq!(pick(&d, "привет", RU, &[EN, GER]), None);
+    }
+
+    #[test]
     fn uk_heuristics() {
-        assert!(bad_uk("привыт")); // ы нет в украинском
+        assert!(bad_uk("привыт")); // ы is not Ukrainian
         assert!(!bad_uk("привіт"));
         assert!(!bad_uk("п'ять"));
         assert!(bad_uk("ьаб"));

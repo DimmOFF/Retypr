@@ -1,15 +1,15 @@
-//! Настраиваемые горячие клавиши: разбор строк вида "Ctrl+Alt+F12" и поиск действия по нажатию.
+//! Configurable hotkeys: parsing strings like "Ctrl+Alt+F12" and looking up the action for a key press.
 use crate::config::HotkeysConfig;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
-    /// конвертировать последнее слово (повтор — следующая раскладка)
+    /// convert the last word (press again: the next layout)
     Word,
-    /// конвертировать выделенный текст
+    /// convert the selected text
     Selection,
-    /// включить/выключить автопереключение глобально
+    /// turn auto-switching on/off globally
     ToggleAuto,
-    /// включить/выключить автопереключение для текущего приложения
+    /// turn auto-switching on/off for the current app
     ToggleApp,
 }
 
@@ -25,7 +25,7 @@ const FIXED: &[&str] = &[
     "right", "up", "down", "grave",
 ];
 
-/// Привести имя клавиши (с алиасами) к каноническому статическому.
+/// Map a key name (aliases allowed) to its canonical static name.
 pub fn canonical(name: &str) -> Option<&'static str> {
     let n = name.trim().to_lowercase().replace(' ', "");
     let canon: String = match n.as_str() {
@@ -66,7 +66,7 @@ pub struct Hotkey {
     pub key: &'static str,
 }
 
-/// Все поддерживаемые имена клавиш (для выпадающего списка в настройках).
+/// All supported key names (for the drop-down in the settings).
 pub fn all_keys() -> Vec<&'static str> {
     let mut v: Vec<&'static str> = FIXED.iter().chain(FKEYS.iter()).copied().collect();
     for i in 0..26 {
@@ -78,7 +78,7 @@ pub fn all_keys() -> Vec<&'static str> {
     v
 }
 
-/// Красивое имя клавиши: "pause" → "Pause", "scrolllock" → "ScrollLock", "f5" → "F5", "a" → "A".
+/// Display name of a key: "pause" -> "Pause", "scrolllock" -> "ScrollLock", "f5" -> "F5", "a" -> "A".
 pub fn pretty(k: &str) -> String {
     match k {
         "scrolllock" => "ScrollLock".into(),
@@ -99,7 +99,7 @@ pub fn pretty(k: &str) -> String {
 }
 
 impl Hotkey {
-    /// Строка для config.toml: "Ctrl+Alt+Pause".
+    /// String for config.toml: "Ctrl+Alt+Pause".
     pub fn to_config_string(&self) -> String {
         let mut p: Vec<String> = vec![];
         if self.ctrl { p.push("Ctrl".into()); }
@@ -137,7 +137,7 @@ impl Hotkey {
 pub struct Bindings(Vec<(Hotkey, Action)>);
 
 impl Bindings {
-    /// Возвращает привязки и список предупреждений (битые/повторяющиеся сочетания заменяются умолчаниями).
+    /// Returns the bindings and a list of warnings (broken or duplicate shortcuts fall back to the defaults).
     pub fn from_config(c: &HotkeysConfig) -> (Self, Vec<String>) {
         let d = HotkeysConfig::default();
         let items = [
@@ -206,7 +206,7 @@ mod tests {
     fn exact_modifiers() {
         let h = Hotkey::parse("Pause").unwrap();
         assert!(h.matches("pause", false, false, false, false));
-        assert!(!h.matches("pause", false, false, true, false)); // Shift+Pause — другое сочетание
+        assert!(!h.matches("pause", false, false, true, false)); // Shift+Pause is a different shortcut
     }
 
     #[test]

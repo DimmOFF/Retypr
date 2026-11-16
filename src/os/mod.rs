@@ -1,4 +1,4 @@
-//! Тонкий слой над ОС: хук клавиш, ввод текста, смена раскладки, конвертация выделения.
+//! Thin OS layer: key hook, text input, layout switching, selection conversion.
 
 /// What to do with the text and the caret right after a selection has been converted and pasted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -56,7 +56,7 @@ pub fn caret_plan(a: AfterConvert, n: usize) -> Vec<Step> {
     v
 }
 
-/// Непрозрачный идентификатор раскладки (на Windows — HKL).
+/// Opaque layout identifier (on Windows: the HKL).
 pub type LayoutId = isize;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -67,9 +67,9 @@ pub enum K {
     Meta,
     Backspace,
     Space,
-    /// Enter / Tab / стрелки / Esc / Delete и т.п. — слово закончилось, буфер сбросить
+    /// Enter / Tab / arrows / Esc / Delete etc.: the word is over, reset the buffer
     Reset,
-    /// Любая другая клавиша; символ (если есть) лежит в `text`
+    /// Any other key; its character (if any) is in `text`
     Char,
 }
 
@@ -78,7 +78,7 @@ pub struct KeyEvent {
     pub down: bool,
     pub key: K,
     pub text: String,
-    /// Платформенно-нейтральное имя клавиши для горячих клавиш ("pause", "f12", "a"…); "" — неизвестна/синтетическое
+    /// Platform-neutral key name for hotkeys ("pause", "f12", "a"...); "" = unknown or a synthetic event
     pub name: &'static str,
 }
 

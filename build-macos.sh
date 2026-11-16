@@ -19,7 +19,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_NAME="Retypr"
-BIN_NAME="retypr"
+BIN_NAME="Retypr"
 BUNDLE_ID="com.retypr.app"
 IDENTITY="${CODESIGN_IDENTITY:--}"
 LSUI="${LSUIELEMENT:-true}"
@@ -154,7 +154,6 @@ STAGE="$(mktemp -d)/$APP_NAME"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 [ -f packaging/macos/README.txt ] && cp packaging/macos/README.txt "$STAGE/READ ME FIRST.txt"
-[ -f get-dicts.sh ] && cp get-dicts.sh "$STAGE/get-dicts.sh"
 
 if command -v create-dmg >/dev/null 2>&1; then
   info "Creating DMG with create-dmg..."

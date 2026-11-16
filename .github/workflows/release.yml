@@ -52,8 +52,8 @@ jobs:
         run: |
           $name = "Retypr-$env:VERSION-windows-x64"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
-          Copy-Item target/x86_64-pc-windows-msvc/release/retypr.exe "dist/$name/"
-          Copy-Item README.md, get-dicts.cmd "dist/$name/"
+          Copy-Item target/x86_64-pc-windows-msvc/release/Retypr.exe "dist/$name/"
+          Copy-Item README.md "dist/$name/"
           Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
 
       - uses: actions/upload-artifact@v4
@@ -136,8 +136,8 @@ jobs:
         run: |
           NAME="Retypr-$VERSION-linux-x86_64"
           mkdir -p "dist/$NAME"
-          cp target/release/retypr README.md get-dicts.sh "dist/$NAME/"
-          chmod +x "dist/$NAME/retypr" "dist/$NAME/get-dicts.sh"
+          cp target/release/Retypr README.md "dist/$NAME/"
+          chmod +x "dist/$NAME/Retypr"
           tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
 
       - uses: actions/upload-artifact@v4

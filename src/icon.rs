@@ -1,9 +1,21 @@
-//! Иконка приложения, рисуется кодом: круг + буква «R». Синий — авто вкл, серый — выкл.
+//! App icon, drawn in code: a disc with a white "R".
+//!  Blue  - auto-switching is on
+//!  Gray  - auto-switching is off (or Retypr is disabled for the focused app)
+//!  Split - auto-switching is on, but paused for the focused app: blue upper-left half, gray lower-right half
 pub const SIZE: usize = 32;
 
-pub fn rgba(on: bool) -> Vec<u8> {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IconKind {
+    Blue,
+    Gray,
+    Split,
+}
+
+const BLUE: (u8, u8, u8) = (0x2E, 0x7D, 0xF6);
+const GRAY: (u8, u8, u8) = (0x88, 0x88, 0x88);
+
+pub fn rgba(kind: IconKind) -> Vec<u8> {
     const GLYPH: [&str; 7] = ["1111.", "1...1", "1...1", "1111.", "1.1..", "1..1.", "1...1"];
-    let (r, g, b) = if on { (0x2E, 0x7D, 0xF6) } else { (0x88, 0x88, 0x88) };
     let mut px = vec![0u8; SIZE * SIZE * 4];
     let mut put = |x: usize, y: usize, c: (u8, u8, u8)| {
         let i = (y * SIZE + x) * 4;
@@ -13,7 +25,15 @@ pub fn rgba(on: bool) -> Vec<u8> {
         for x in 0..SIZE {
             let (dx, dy) = (x as f32 + 0.5 - 16.0, y as f32 + 0.5 - 16.0);
             if dx * dx + dy * dy <= 15.5 * 15.5 {
-                put(x, y, (r, g, b));
+                let color = match kind {
+                    IconKind::Blue => BLUE,
+                    IconKind::Gray => GRAY,
+                    // diagonal from the top-right to the bottom-left corner
+                    IconKind::Split => {
+                        if (x as f32 + 0.5) + (y as f32 + 0.5) < SIZE as f32 { BLUE } else { GRAY }
+                    }
+                };
+                put(x, y, color);
             }
         }
     }

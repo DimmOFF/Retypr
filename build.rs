@@ -1,6 +1,6 @@
-// Встраивает иконку, манифест и версию в retypr.exe (только при сборке на Windows).
-// Нужен Windows SDK (rc.exe) — ставится вместе с Visual Studio Build Tools. Если его нет,
-// сборка не падает: exe просто будет без иконки (предупреждение появится в выводе cargo).
+// Embeds the icon, manifest and version into Retypr.exe (only when building on Windows).
+// Needs the Windows SDK (rc.exe), installed with the Visual Studio Build Tools. If it is missing,
+// the build does not fail: the exe just has no icon (cargo prints a warning).
 
 #[cfg(windows)]
 fn main() {
@@ -13,9 +13,10 @@ fn main() {
     res.set_manifest_file("assets/retypr.manifest");
     res.set("ProductName", "Retypr");
     res.set("FileDescription", "Retypr — keyboard layout switcher");
+    res.set("OriginalFilename", "Retypr.exe");
     res.set("LegalCopyright", "Retypr");
     if let Err(e) = res.compile() {
-        println!("cargo:warning=не удалось встроить ресурсы (иконка/манифест): {e}");
+        println!("cargo:warning=could not embed resources (icon/manifest): {e}");
     }
 }
 

@@ -2,10 +2,10 @@ use crate::{
     config::Config,
     detector::Detector,
     hotkey::{Action, Bindings},
-    layout_map::Lang,
+    lang::Lang,
     os::{self, AfterConvert, KeyEvent, LayoutId, K},
     sound::{SoundEvent, Sounds},
-    state,
+    state::{self, AppMode},
 };
 use std::{
     collections::HashSet,
@@ -13,16 +13,6 @@ use std::{
     thread,
     time::Duration,
 };
-
-/// Режим работы в текущем приложении.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum AppMode {
-    Normal,
-    /// Автопереключение выключено, ручные горячие клавиши работают
-    NoAuto,
-    /// Полностью выключено: клавиши (включая Pause) проходят в приложение как есть
-    Off,
-}
 
 struct Rules {
     disabled: HashSet<String>,
@@ -48,15 +38,14 @@ impl Rules {
     }
 }
 
-/// Состояние циклического перебора раскладок для слова.
-/// Всегда конвертируем из исходного текста — так цикл не накапливает потерь.
+/// Cycling state for a word. We always convert from the ORIGINAL text, so cycling never accumulates losses.
 struct Cycle {
     origin_text: String,
     origin: LayoutId,
     shown: LayoutId,
 }
 
-/// То же для выделенного текста.
+/// The same for selected text.
 struct SelCycle {
     origin_text: String,
     origin: LayoutId,
@@ -72,11 +61,12 @@ pub struct Engine {
     rules: Rules,
     mode: AppMode,
     keys: Bindings,
-    auto_langs: Vec<Lang>,
-    /// клавиши, чьё нажатие мы поглотили как горячую клавишу (чтобы поглотить и отпускание/автоповтор)
+    /// languages that do not take part in auto-switching
+    disabled_langs: HashSet<Lang>,
+    /// keys whose press we swallowed as a hotkey (so the release / auto-repeat is swallowed as well)
     swallowed: HashSet<&'static str>,
-    word: Vec<char>, // текущее / последнее слово (как оно сейчас на экране)
-    tail: String,    // пробелы после слова
+    word: Vec<char>, // the current / last word, as it is on screen right now
+    tail: String,    // spaces after the word
     cycle: Option<Cycle>,
     sel: Arc<Mutex<Option<SelCycle>>>,
     shift: bool,
@@ -85,7 +75,7 @@ pub struct Engine {
     meta: bool,
 }
 
-/// Выполнить действие в отдельном потоке (хук обязан вернуться быстро).
+/// Run an action on another thread (the keyboard hook must return quickly).
 fn run_busy<F>(busy: &Arc<AtomicBool>, f: F)
 where
     F: FnOnce() -> anyhow::Result<()> + Send + 'static,
@@ -101,20 +91,19 @@ where
     });
 }
 
-fn parse_langs(cfg: &Config) -> Vec<Lang> {
-    let v: Vec<Lang> = cfg.auto_languages.iter().filter_map(|s| Lang::from_code(s)).collect();
-    if v.is_empty() { vec![Lang::En, Lang::Ru, Lang::Uk] } else { v }
+fn parse_disabled(cfg: &Config) -> HashSet<Lang> {
+    cfg.disabled_languages.iter().filter_map(|c| Lang::from_code(c)).collect()
 }
 
 impl Engine {
-    /// Применить перечитанный конфиг «на лету» (тяжёлую загрузку словарей вызывающий делает заранее).
+    /// Apply a re-read config on the fly (the caller loads the heavy part - dictionaries - beforehand).
     pub fn reconfigure(&mut self, cfg: &Config, keys: Bindings, det: Detector) {
         self.rules = Rules::from_config(cfg);
         self.keys = keys;
         self.det = Arc::new(det);
         self.sounds = Arc::new(Sounds::new(cfg.sounds.clone()));
         self.after = AfterConvert::from_config(cfg);
-        self.auto_langs = parse_langs(cfg);
+        self.disabled_langs = parse_disabled(cfg);
         self.swallowed.clear();
         self.reset();
         self.refresh_app();
@@ -122,8 +111,8 @@ impl Engine {
 
     pub fn new(cfg: Config, keys: Bindings) -> Self {
         let rules = Rules::from_config(&cfg);
-        let auto_langs = parse_langs(&cfg);
         let mode = rules.mode_for(&os::foreground_app());
+        state::set_app_mode(mode);
         Self {
             det: Arc::new(Detector::new(&cfg)),
             sounds: Arc::new(Sounds::new(cfg.sounds.clone())),
@@ -132,7 +121,7 @@ impl Engine {
             rules,
             mode,
             keys,
-            auto_langs,
+            disabled_langs: parse_disabled(&cfg),
             swallowed: HashSet::new(),
             word: vec![],
             tail: String::new(),
@@ -154,13 +143,19 @@ impl Engine {
         }
     }
 
-    fn refresh_app(&mut self) {
-        let app = os::foreground_app();
-        self.mode = self.rules.mode_for(&app);
-        log::debug!("app: {app:?}, mode: {:?}", self.mode);
+    fn set_mode(&mut self, mode: AppMode) {
+        self.mode = mode;
+        state::set_app_mode(mode); // the tray icon follows (see state.rs)
     }
 
-    /// Горячая клавиша? Some(true) — событие поглощено, None — не наша клавиша.
+    fn refresh_app(&mut self) {
+        let app = os::foreground_app();
+        let mode = self.rules.mode_for(&app);
+        self.set_mode(mode);
+        log::debug!("app: {app:?}, mode: {mode:?}");
+    }
+
+    /// Is this a hotkey? Some(true): the event was swallowed; None: not our key.
     fn hotkey(&mut self, ev: &KeyEvent) -> Option<bool> {
         if ev.name.is_empty() {
             return None;
@@ -169,7 +164,7 @@ impl Engine {
             return if self.swallowed.remove(ev.name) { Some(true) } else { None };
         }
         if self.swallowed.contains(ev.name) {
-            return Some(true); // автоповтор зажатой горячей клавиши
+            return Some(true); // auto-repeat of a held hotkey
         }
         let action = self.keys.find(ev.name, self.ctrl, self.alt, self.shift, self.meta)?;
         self.swallowed.insert(ev.name);
@@ -190,14 +185,14 @@ impl Engine {
                 }
             }
             Action::Selection => self.cycle_selection(),
-            Action::ToggleAuto => state::set_auto(!state::auto()), // трей обновится через колбэк
+            Action::ToggleAuto => state::set_auto(!state::auto()), // the tray refreshes itself
             Action::ToggleApp => self.toggle_app_auto(),
         }
     }
 
-    /// true = событие подавить (приложение его не увидит).
+    /// true = swallow the event (the application will not see it).
     pub fn handle(&mut self, ev: &KeyEvent) -> bool {
-        // Модификаторы отслеживаем всегда
+        // Always track the modifiers
         match ev.key {
             K::Shift => { self.shift = ev.down; return false; }
             K::Ctrl => { self.ctrl = ev.down; return false; }
@@ -205,7 +200,7 @@ impl Engine {
             K::Meta => { self.meta = ev.down; return false; }
             _ => {}
         }
-        // Синтетическое событие: смена окна / клик мышью — слово сбрасываем, режим пересчитываем
+        // Synthetic event: the focused window changed / a mouse click - drop the word, recompute the mode
         if ev.key == K::Reset && ev.down && ev.name.is_empty() {
             self.refresh_app();
             self.reset();
@@ -218,14 +213,14 @@ impl Engine {
             return swallow;
         }
         if ev.key == K::Reset && ev.down {
-            self.reset(); // Enter, Tab, стрелки, Esc…
+            self.reset(); // Enter, Tab, arrows, Esc...
             return false;
         }
         if !ev.down || self.busy.load(Ordering::SeqCst) {
             return false;
         }
         if self.ctrl || self.alt || self.meta {
-            self.reset(); // Ctrl+V, Alt+Tab и т.п.
+            self.reset(); // Ctrl+V, Alt+Tab and the like
             return false;
         }
         match ev.key {
@@ -253,15 +248,15 @@ impl Engine {
         false
     }
 
-    /// Автопереключение: слово только что закончилось пробелом.
-    /// Среди установленных раскладок (из `auto_languages`) детектор выбирает подходящую.
+    /// Auto-switching: the word has just been finished with a space.
+    /// Among the installed layouts (languages not disabled in the settings) the detector picks the right one.
     fn try_auto(&mut self) {
         if self.cycle.is_some() {
-            return; // слово уже конвертировал пользователь вручную
+            return; // the user already converted this word by hand
         }
         let cur = os::current_layout();
         let Some(cl) = os::layout_lang(cur) else { return };
-        if !self.auto_langs.contains(&cl) {
+        if self.disabled_langs.contains(&cl) {
             return;
         }
         let mut cands: Vec<(LayoutId, Lang)> = vec![];
@@ -270,7 +265,7 @@ impl Engine {
                 continue;
             }
             if let Some(g) = os::layout_lang(l) {
-                if g != cl && self.auto_langs.contains(&g) && !cands.iter().any(|(_, x)| *x == g) {
+                if g != cl && !self.disabled_langs.contains(&g) && !cands.iter().any(|(_, x)| *x == g) {
                     cands.push((l, g));
                 }
             }
@@ -284,7 +279,7 @@ impl Engine {
         }
     }
 
-    /// Заменить слово на `origin_text`, «набранный» в раскладке `target`.
+    /// Replace the word with `origin_text` as if it had been typed in layout `target`.
     fn apply(&mut self, origin_text: String, origin: LayoutId, target: LayoutId, snd: SoundEvent) {
         let text = os::convert(&origin_text, origin, target);
         let erase = self.word.len() + self.tail.chars().count();
@@ -300,7 +295,7 @@ impl Engine {
         });
     }
 
-    /// Действие toggle_app_auto (по умолчанию Alt+Shift+Pause): автопереключение для текущего приложения (с сохранением в config.toml).
+    /// Action `toggle_app_auto` (Alt+Shift+Pause by default): auto-switching for the current app (saved to config.toml).
     fn toggle_app_auto(&mut self) {
         let app = os::foreground_app();
         if app.is_empty() {
@@ -312,7 +307,8 @@ impl Engine {
             self.rules.no_auto.insert(app.clone());
             true
         };
-        self.mode = self.rules.mode_for(&app);
+        let mode = self.rules.mode_for(&app);
+        self.set_mode(mode);
         println!("{app}: auto-switching {}", if excluded { "OFF" } else { "ON" });
         self.sounds.play(SoundEvent::Rule);
 
@@ -329,7 +325,7 @@ impl Engine {
         });
     }
 
-    /// convert_word: следующая раскладка по кругу для последнего слова.
+    /// convert_word: the next layout in the cycle for the last word.
     fn cycle_word(&mut self) {
         let (origin_text, origin, shown) = match &self.cycle {
             Some(c) => (c.origin_text.clone(), c.origin, c.shown),
@@ -340,12 +336,12 @@ impl Engine {
         };
         let target = os::next_layout(shown);
         if target == shown {
-            return; // установлена всего одна раскладка
+            return; // only one layout is installed
         }
         self.apply(origin_text, origin, target, SoundEvent::Manual);
     }
 
-    /// convert_selection: следующая раскладка по кругу для выделенного текста.
+    /// convert_selection: the next layout in the cycle for the selected text.
     fn cycle_selection(&mut self) {
         let st = self.sel.clone();
         let sounds = self.sounds.clone();
@@ -353,7 +349,7 @@ impl Engine {
         run_busy(&self.busy, move || {
             os::convert_selection(after, move |sel, cur| {
                 let mut g = st.lock().unwrap_or_else(|p| p.into_inner());
-                // Продолжаем цикл, только если выделен ровно тот текст, что мы вставили
+                // Continue the cycle only if exactly the text we pasted is selected
                 let (origin_text, origin, shown) = match g.as_ref() {
                     Some(c) if c.shown_text == sel => (c.origin_text.clone(), c.origin, c.shown),
                     _ => (sel.to_string(), cur, cur),
@@ -385,5 +381,14 @@ mod tests {
         assert_eq!(r.mode_for("code.exe"), AppMode::NoAuto);
         assert_eq!(r.mode_for("notepad.exe"), AppMode::Normal);
         assert_eq!(r.mode_for(""), AppMode::Normal);
+    }
+
+    #[test]
+    fn disabled_languages_parse() {
+        let mut cfg = Config::default();
+        cfg.disabled_languages = vec!["de".into(), "bogus".into()];
+        let s = parse_disabled(&cfg);
+        assert!(s.contains(&Lang(0x07)));
+        assert_eq!(s.len(), 1);
     }
 }

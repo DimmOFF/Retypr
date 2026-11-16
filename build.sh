@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Сборка под Linux (X11).
-# Использование: ./build.sh [debug] [--install-deps]
+# Build Retypr for Linux (X11; the Linux port is still experimental).
+# Usage: ./build.sh [debug] [--install-deps]
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -13,7 +13,7 @@ for a in "$@"; do
 done
 
 install_deps() {
-  echo "[INFO] Установка системных зависимостей..."
+  echo "[INFO] Installing system dependencies..."
   if command -v apt-get >/dev/null; then
     sudo apt-get update
     sudo apt-get install -y build-essential pkg-config libx11-dev libxtst-dev libxi-dev \
@@ -25,20 +25,20 @@ install_deps() {
     sudo pacman -S --needed --noconfirm base-devel pkgconf libx11 libxtst libxi \
       libxkbcommon xdotool libevdev alsa-lib
   else
-    echo "[WARN] Неизвестный пакетный менеджер, поставьте зависимости вручную (см. README)."
+    echo "[WARN] Unknown package manager: install the X11, xdo, evdev and ALSA development packages manually."
   fi
 }
 
 [ "$INSTALL_DEPS" = 1 ] && install_deps
 
-command -v cargo >/dev/null || { echo "[ERROR] cargo не найден: https://rustup.rs"; exit 1; }
+command -v cargo >/dev/null || { echo "[ERROR] cargo not found: https://rustup.rs"; exit 1; }
 
-echo "[INFO] Сборка retypr ($PROFILE) для Linux..."
+echo "[INFO] Building Retypr ($PROFILE) for Linux..."
 cargo build $FLAGS
 
 OUT="dist/linux-$(uname -m)"
 mkdir -p "$OUT"
-cp "target/$PROFILE/retypr" "$OUT/"
+cp "target/$PROFILE/Retypr" "$OUT/"
 cp README.md "$OUT/"
-echo "[OK] Готово: $OUT/retypr"
-echo "[HINT] Для переключения раскладки нужен xkb-switch (X11). Для Wayland/evdev потребуется группа 'input'."
+echo "[OK] Built: $OUT/Retypr"
+echo "[HINT] Switching the layout needs xkb-switch (X11). Wayland/evdev would need membership of the 'input' group."

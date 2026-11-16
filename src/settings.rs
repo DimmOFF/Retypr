@@ -1,14 +1,25 @@
-//! Settings window (egui). Runs as a separate process: `retypr.exe --settings`.
-//! It writes config.toml; the running Retypr picks changes up on its own (within ~1 second).
+//! Settings window (egui). Runs as a separate process: `Retypr.exe --settings`.
+//! It writes config.toml; the running Retypr picks the changes up on its own (within ~1 second).
 use crate::{
     autostart,
     config::{CaretSide, Config, HotkeysConfig},
     hotkey::{self, Hotkey},
-    icon,
+    icon::{self, IconKind},
+    lang::Lang,
+    os,
     sound::Sounds,
+    tray::SETTINGS_TITLE,
 };
 use eframe::egui::{self, vec2, Align, Align2, Color32, FontId, Frame, Layout, Margin, RichText, Rounding, Sense, Stroke};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    io::Read,
+    path::Path,
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
+
+const GITHUB_URL: &str = "https://github.com/DimmOFF/Retypr";
 
 // ───────────────────────────── palette & style ─────────────────────────────
 
@@ -50,7 +61,7 @@ fn palette(dark: bool) -> Pal {
 }
 
 fn setup_fonts(ctx: &egui::Context) {
-    // Segoe UI gives the native Windows look (and Cyrillic coverage for future translations).
+    // Segoe UI gives the native Windows look (and covers Cyrillic and many other scripts).
     let mut fonts = egui::FontDefinitions::default();
     if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\segoeui.ttf") {
         fonts.font_data.insert("segoe".to_owned(), egui::FontData::from_owned(bytes));
@@ -128,7 +139,7 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     resp
 }
 
-/// Pill-shaped on/off chip (used for modifiers and languages).
+/// Pill-shaped on/off chip (used for modifiers).
 fn chip(ui: &mut egui::Ui, pal: &Pal, text: &str, on: &mut bool) -> egui::Response {
     let (bg, fg) = if *on { (ACCENT, Color32::WHITE) } else { (pal.chip, ui.visuals().text_color()) };
     let r = ui.add(
@@ -197,6 +208,10 @@ fn divider(ui: &mut egui::Ui) {
     ui.add_space(2.0);
 }
 
+fn weak(ui: &egui::Ui, text: &str) -> RichText {
+    RichText::new(text).size(12.5).color(ui.visuals().weak_text_color())
+}
+
 /// Setting row: title + description on the left, control on the right.
 fn row(ui: &mut egui::Ui, title: &str, desc: &str, controls: impl FnOnce(&mut egui::Ui)) {
     let w = ui.available_width();
@@ -205,7 +220,7 @@ fn row(ui: &mut egui::Ui, title: &str, desc: &str, controls: impl FnOnce(&mut eg
             ui.set_max_width(w * 0.55);
             ui.label(RichText::new(title).size(15.5));
             if !desc.is_empty() {
-                ui.label(RichText::new(desc).size(12.5).color(ui.visuals().weak_text_color()));
+                ui.label(weak(ui, desc));
             }
         });
         ui.with_layout(Layout::right_to_left(Align::Center), controls);
@@ -256,6 +271,222 @@ fn draw_logo(ui: &mut egui::Ui, size: f32) {
     }
 }
 
+fn open_url(url: &str) {
+    let _ = std::process::Command::new("explorer").arg(url).spawn();
+}
+
+fn open_folder(path: &Path) {
+    let _ = std::fs::create_dir_all(path);
+    let _ = std::process::Command::new("explorer").arg(path).spawn();
+}
+
+// ───────────────────────────── dictionaries ─────────────────────────────
+
+#[derive(Clone)]
+struct DictInfo {
+    words: usize,
+    modified: Option<SystemTime>,
+}
+
+#[derive(Clone)]
+enum Dl {
+    Running,
+    Failed(String),
+}
+
+type Downloads = Arc<Mutex<HashMap<Lang, Dl>>>;
+type Infos = Arc<Mutex<HashMap<Lang, DictInfo>>>;
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn dict_info(path: &Path) -> Option<DictInfo> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let words = text.lines().filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#')).count();
+    if words == 0 {
+        return None;
+    }
+    Some(DictInfo { words, modified: std::fs::metadata(path).and_then(|m| m.modified()).ok() })
+}
+
+fn ago(t: SystemTime) -> String {
+    let secs = SystemTime::now().duration_since(t).map(|d| d.as_secs()).unwrap_or(0);
+    match secs {
+        0..=59 => "just now".into(),
+        60..=3599 => format!("{} min ago", secs / 60),
+        3600..=86399 => format!("{} h ago", secs / 3600),
+        _ => format!("{} days ago", secs / 86400),
+    }
+}
+
+fn fmt_num(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Download <lang>_50k.txt (50,000 most frequent words, FrequencyWords project, CC-BY-SA 4.0) as <dir>/<code>.txt.
+fn download_dict(dir: &Path, lang: Lang) -> Result<DictInfo, String> {
+    let code = lang.code();
+    let url = format!("https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/{code}/{code}_50k.txt");
+    let resp = ureq::get(&url)
+        .timeout(std::time::Duration::from_secs(60))
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(404, _) => format!("no word list is available for {}", lang.name()),
+            other => other.to_string(),
+        })?;
+    let mut body = String::new();
+    resp.into_reader()
+        .take(32 * 1024 * 1024)
+        .read_to_string(&mut body)
+        .map_err(|e| e.to_string())?;
+    if body.lines().filter(|l| !l.trim().is_empty()).count() < 100 {
+        return Err("the downloaded file looks empty".into());
+    }
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let tmp = dir.join(format!("{code}.txt.part"));
+    let dst = dir.join(format!("{code}.txt"));
+    std::fs::write(&tmp, &body).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &dst).map_err(|e| e.to_string())?;
+    dict_info(&dst).ok_or_else(|| "could not read the saved file".to_string())
+}
+
+/// Start a background download. A running Retypr reloads its dictionaries by itself afterwards.
+fn spawn_download(dir: &Path, dl: &Downloads, infos: &Infos, ctx: &egui::Context, lang: Lang) {
+    {
+        let mut g = lock(dl);
+        if matches!(g.get(&lang), Some(Dl::Running)) {
+            return;
+        }
+        g.insert(lang, Dl::Running);
+    }
+    let (dir, dl, infos, ctx) = (dir.to_path_buf(), dl.clone(), infos.clone(), ctx.clone());
+    std::thread::spawn(move || {
+        let result = download_dict(&dir, lang);
+        {
+            let mut g = lock(&dl);
+            match &result {
+                Ok(_) => {
+                    g.remove(&lang);
+                }
+                Err(e) => {
+                    g.insert(lang, Dl::Failed(e.clone()));
+                }
+            }
+        }
+        if let Ok(info) = result {
+            lock(&infos).insert(lang, info);
+            Config::touch(); // makes a running Retypr reload
+        }
+        ctx.request_repaint();
+    });
+}
+
+fn set_lang_enabled(cfg: &mut Config, lang: Lang, on: bool) {
+    cfg.disabled_languages.retain(|c| Lang::from_code(c) != Some(lang));
+    if !on {
+        cfg.disabled_languages.push(lang.code());
+    }
+}
+
+// ───────────────────────────── sounds ─────────────────────────────
+
+/// Copy a chosen sound file into <data>/sounds (so the program folder stays portable) and return the
+/// path to store in the config (relative to the data folder when possible).
+fn import_sound(src: &Path) -> String {
+    let Some(data) = Config::dir() else { return src.to_string_lossy().to_string() };
+    if src.starts_with(&data) {
+        return Config::relativize(src);
+    }
+    let sounds = data.join("sounds");
+    if std::fs::create_dir_all(&sounds).is_err() {
+        return src.to_string_lossy().to_string();
+    }
+    let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "sound".into());
+    let ext = src.extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
+    let src_len = std::fs::metadata(src).map(|m| m.len()).ok();
+    let mut dest = sounds.join(format!("{stem}{ext}"));
+    let mut n = 1;
+    // same name and same size: it is the same file, reuse it; otherwise pick a free name
+    while dest.exists() && std::fs::metadata(&dest).map(|m| m.len()).ok() != src_len {
+        n += 1;
+        dest = sounds.join(format!("{stem}-{n}{ext}"));
+    }
+    if !dest.exists() && std::fs::copy(src, &dest).is_err() {
+        return src.to_string_lossy().to_string();
+    }
+    Config::relativize(&dest)
+}
+
+fn sound_item(ui: &mut egui::Ui, title: &str, path: &mut String, player: &Sounds, vol: f32) {
+    ui.label(RichText::new(title).size(15.0));
+    ui.horizontal(|ui| {
+        let w = (ui.available_width() - 260.0).max(120.0);
+        ui.add(egui::TextEdit::singleline(path).desired_width(w).hint_text("No sound"));
+        if ui.button("Browse…").clicked() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("Audio", &["wav", "mp3", "ogg", "flac"]).pick_file() {
+                *path = import_sound(&p);
+            }
+        }
+        let has = !path.trim().is_empty();
+        if ui.add_enabled(has, egui::Button::new("Test")).clicked() {
+            player.play_file(&Config::resolve(path.trim()), vol);
+        }
+        if ui.add_enabled(has, egui::Button::new("Clear")).clicked() {
+            path.clear();
+        }
+    });
+}
+
+fn app_list(ui: &mut egui::Ui, pal: &Pal, id: &str, list: &mut Vec<String>, input: &mut String) {
+    ui.push_id(id, |ui| {
+        let mut remove = None;
+        if list.is_empty() {
+            ui.label(RichText::new("No apps added yet.").italics().color(ui.visuals().weak_text_color()));
+        }
+        for (i, app) in list.iter().enumerate() {
+            ui.horizontal(|ui| {
+                keycap(ui, pal, app);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            });
+        }
+        if let Some(i) = remove {
+            list.remove(i);
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(input).hint_text("e.g. notepad++.exe").desired_width(200.0));
+            let add = ui.button("Add").clicked();
+            if ui.button("Browse…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("Programs", &["exe"]).pick_file() {
+                    if let Some(n) = p.file_name() {
+                        *input = n.to_string_lossy().to_lowercase();
+                    }
+                }
+            }
+            if add {
+                let v = input.trim().to_lowercase();
+                if !v.is_empty() && !list.iter().any(|x| x.eq_ignore_ascii_case(&v)) {
+                    list.push(v);
+                }
+                input.clear();
+            }
+        });
+    });
+}
+
 // ───────────────────────────── app ─────────────────────────────
 
 #[derive(PartialEq, Clone, Copy)]
@@ -288,16 +519,16 @@ pub fn run() -> anyhow::Result<()> {
     let inst = single_instance::SingleInstance::new("Retypr-settings-6f1c9d3a")
         .map_err(|e| anyhow::anyhow!("single-instance: {e:?}"))?;
     if !inst.is_single() {
-        return Ok(()); // settings window is already open
+        return Ok(()); // the settings window is already open
     }
     let cfg = Config::load_or_create()?;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Retypr Settings")
+            .with_title(SETTINGS_TITLE)
             .with_inner_size([820.0, 600.0])
             .with_min_inner_size([700.0, 480.0])
             .with_icon(egui::IconData {
-                rgba: icon::rgba(true),
+                rgba: icon::rgba(IconKind::Blue),
                 width: icon::SIZE as u32,
                 height: icon::SIZE as u32,
             }),
@@ -313,28 +544,19 @@ fn parse_or(s: &str, default: &str) -> Hotkey {
     Hotkey::parse(s).or_else(|_| Hotkey::parse(default)).unwrap_or_default()
 }
 
-fn count_words(path: &Path) -> Option<usize> {
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|s| s.lines().filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#')).count())
-}
-
-fn open_folder(path: &Path) {
-    let _ = std::fs::create_dir_all(path);
-    let _ = std::process::Command::new("explorer").arg(path).spawn();
-}
-
 struct App {
     cfg: Config,
     saved_cfg: Config,
     tab: Tab,
     hk: [Hotkey; 4],
-    langs: [bool; 3], // en, ru, uk
+    /// languages of the layouts installed in Windows
+    installed: Vec<Lang>,
     all_keys: Vec<&'static str>,
     new_auto_app: String,
     new_disabled_app: String,
     exceptions: String,
-    dict_counts: [Option<usize>; 3],
+    dict_infos: Infos,
+    downloads: Downloads,
     autostart: bool,
     player: Sounds,
     status: String,
@@ -354,19 +576,18 @@ impl App {
             parse_or(&cfg.hotkeys.toggle_auto, &d.toggle_auto),
             parse_or(&cfg.hotkeys.toggle_app_auto, &d.toggle_app_auto),
         ];
-        let has = |c: &str| cfg.auto_languages.iter().any(|x| x.eq_ignore_ascii_case(c));
-        let langs = [has("en"), has("ru"), has("uk") || has("ua")];
         let exceptions = std::fs::read_to_string(cfg.dict_path().join("exceptions.txt")).unwrap_or_default();
         let player = Sounds::new(cfg.sounds.clone());
         let mut app = Self {
             tab: Tab::General,
             hk,
-            langs,
+            installed: os::installed_languages(),
             all_keys: hotkey::all_keys(),
             new_auto_app: String::new(),
             new_disabled_app: String::new(),
             exceptions,
-            dict_counts: [None; 3],
+            dict_infos: Arc::new(Mutex::new(HashMap::new())),
+            downloads: Arc::new(Mutex::new(HashMap::new())),
             autostart: autostart::is_enabled(),
             player,
             status: String::new(),
@@ -392,13 +613,15 @@ impl App {
         self.pal = apply_style(ctx, self.dark);
     }
 
-    fn refresh_dicts(&mut self) {
+    fn refresh_dicts(&self) {
         let dir = self.cfg.dict_path();
-        self.dict_counts = [
-            count_words(&dir.join("en.txt")),
-            count_words(&dir.join("ru.txt")),
-            count_words(&dir.join("uk.txt")),
-        ];
+        let mut m = HashMap::new();
+        for l in &self.installed {
+            if let Some(i) = dict_info(&dir.join(format!("{}.txt", l.code()))) {
+                m.insert(*l, i);
+            }
+        }
+        *lock(&self.dict_infos) = m;
     }
 
     fn hk_config(&self) -> HotkeysConfig {
@@ -414,12 +637,6 @@ impl App {
     fn current_cfg(&self) -> Config {
         let mut c = self.cfg.clone();
         c.hotkeys = self.hk_config();
-        c.auto_languages = ["en", "ru", "uk"]
-            .iter()
-            .zip(self.langs)
-            .filter(|(_, on)| *on)
-            .map(|(code, _)| code.to_string())
-            .collect();
         c
     }
 
@@ -493,12 +710,7 @@ impl App {
                 ui.add(egui::Slider::new(&mut self.cfg.min_word_len, 2..=8));
             });
             divider(ui);
-            row(ui, "Languages", "Installed Windows layouts that auto-switching may use.", |ui| {
-                // right-to-left layout: add in reverse to show English · Russian · Ukrainian
-                chip(ui, pal, "Українська", &mut self.langs[2]);
-                chip(ui, pal, "Русский", &mut self.langs[1]);
-                chip(ui, pal, "English", &mut self.langs[0]);
-            });
+            ui.label(weak(ui, "Which languages take part, and their dictionaries: see the Dictionaries page."));
         });
         section(ui, "Converting selected text");
         card(ui, pal, |ui| {
@@ -552,7 +764,7 @@ impl App {
         for (i, (title, hint)) in HK_ROWS.iter().enumerate() {
             card(ui, pal, |ui| {
                 ui.label(RichText::new(*title).size(15.5).strong());
-                ui.label(RichText::new(*hint).size(12.5).color(ui.visuals().weak_text_color()));
+                ui.label(weak(ui, hint));
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     let hk = &mut self.hk[i];
@@ -577,7 +789,7 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Shortcut").size(12.5).color(ui.visuals().weak_text_color()));
+                    ui.label(weak(ui, "Shortcut"));
                     let s = self.hk[i].to_config_string();
                     for (n, part) in s.split('+').enumerate() {
                         if n > 0 {
@@ -594,13 +806,13 @@ impl App {
         page_header(ui, "Apps", "Per-application behavior. Use the executable name, e.g. code.exe.");
         section(ui, "No auto-switching");
         card(ui, pal, |ui| {
-            ui.label(RichText::new("Manual hotkeys still work. Good for IDEs and terminals.").size(12.5).color(ui.visuals().weak_text_color()));
+            ui.label(weak(ui, "Manual hotkeys still work. Good for IDEs and terminals. The tray icon turns half gray while such an app has focus."));
             ui.add_space(4.0);
             app_list(ui, pal, "auto_ex", &mut self.cfg.auto_exclude_apps, &mut self.new_auto_app);
         });
         section(ui, "Retypr disabled");
         card(ui, pal, |ui| {
-            ui.label(RichText::new("All keys (including Pause) pass through untouched. Good for games and remote desktops.").size(12.5).color(ui.visuals().weak_text_color()));
+            ui.label(weak(ui, "All keys (including Pause) pass through untouched. Good for games and remote desktops."));
             ui.add_space(4.0);
             app_list(ui, pal, "disabled", &mut self.cfg.disabled_apps, &mut self.new_disabled_app);
         });
@@ -614,7 +826,11 @@ impl App {
             });
             divider(ui);
             row(ui, "Volume", "", |ui| {
-                ui.add(egui::Slider::new(&mut self.cfg.sounds.volume, 0.0..=1.0).show_value(false));
+                ui.add(
+                    egui::Slider::new(&mut self.cfg.sounds.volume, 0.0..=1.0)
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                        .custom_parser(|s| s.trim().trim_end_matches('%').trim().parse::<f64>().ok().map(|v| v / 100.0)),
+                );
             });
         });
         section(ui, "Events");
@@ -628,25 +844,94 @@ impl App {
             divider(ui);
             sound_item(ui, "Per-app rule toggled", &mut self.cfg.sounds.on_rule_toggle, &self.player, vol);
         });
+        ui.label(weak(
+            ui,
+            "Files you pick are copied into the \"sounds\" folder next to Retypr.exe, so the program folder stays portable.",
+        ));
     }
 
-    fn page_dict(&mut self, ui: &mut egui::Ui, pal: &Pal) {
-        page_header(ui, "Dictionaries", "Word lists let Retypr tell a typo from a wrong layout.");
+    fn page_dict(&mut self, ui: &mut egui::Ui, pal: &Pal, ctx: &egui::Context) {
+        page_header(
+            ui,
+            "Dictionaries",
+            "Auto-switching works with the keyboard layouts installed in Windows. A word list per language lets Retypr tell a typo from a wrong layout.",
+        );
+
+        let langs = self.installed.clone();
+        let dir = self.cfg.dict_path();
+        let (dl, infos) = (self.downloads.clone(), self.dict_infos.clone());
+
+        if langs.is_empty() {
+            card(ui, pal, |ui| {
+                ui.label("No keyboard layouts were found.");
+            });
+            return;
+        }
+
+        // ── all languages at once ──
         card(ui, pal, |ui| {
-            let names = ["English", "Russian", "Ukrainian"];
-            for (i, name) in names.iter().enumerate() {
-                let count = self.dict_counts[i];
-                row(ui, name, "", |ui| match count {
-                    Some(n) => badge(ui, &format!("{n} words"), GOOD),
-                    None => badge(ui, "Not loaded", WARN),
+            let all_on = langs.iter().all(|l| !self.cfg.is_language_disabled(*l));
+            row(ui, "All languages", "Turn auto-switching (and its dictionary) on or off for every installed layout at once.", |ui| {
+                let mut on = all_on;
+                if toggle(ui, &mut on).changed() {
+                    for l in &langs {
+                        set_lang_enabled(&mut self.cfg, *l, on);
+                    }
+                }
+            });
+            divider(ui);
+            ui.horizontal(|ui| {
+                let any_enabled = langs.iter().any(|l| !self.cfg.is_language_disabled(*l));
+                if ui.add_enabled(any_enabled, egui::Button::new("Download / update all enabled")).clicked() {
+                    for l in langs.iter().filter(|l| !self.cfg.is_language_disabled(**l)) {
+                        spawn_download(&dir, &dl, &infos, ctx, *l);
+                    }
+                }
+            });
+        });
+
+        // ── one row per installed language ──
+        section(ui, "Installed layouts");
+        card(ui, pal, |ui| {
+            for (n, &lang) in langs.iter().enumerate() {
+                let enabled = !self.cfg.is_language_disabled(lang);
+                let info = lock(&infos).get(&lang).cloned();
+                let state = lock(&dl).get(&lang).cloned();
+                let builtin = lang == Lang::EN || lang == Lang::RU || lang == Lang::UK;
+                let desc = match &state {
+                    Some(Dl::Failed(msg)) => format!("Download failed: {msg}"),
+                    _ if builtin => format!("{}.txt · built-in rules also work without a dictionary", lang.code()),
+                    _ => format!("{}.txt · a dictionary is required to detect this language", lang.code()),
+                };
+                row(ui, &lang.name(), &desc, |ui| {
+                    // right-to-left: toggle, button, then the status badge
+                    let mut on = enabled;
+                    if toggle(ui, &mut on).changed() {
+                        set_lang_enabled(&mut self.cfg, lang, on);
+                    }
+                    if matches!(state, Some(Dl::Running)) {
+                        ui.add(egui::Spinner::new());
+                    } else {
+                        let label = if info.is_some() { "Update" } else { "Download" };
+                        if ui.button(label).clicked() {
+                            spawn_download(&dir, &dl, &infos, ctx, lang);
+                        }
+                    }
+                    match &info {
+                        Some(i) => {
+                            let when = i.modified.map(ago).map(|a| format!(" · {a}")).unwrap_or_default();
+                            badge(ui, &format!("{} words{when}", fmt_num(i.words)), GOOD);
+                        }
+                        None => badge(ui, "No dictionary", WARN),
+                    }
                 });
-                if i + 1 < names.len() {
+                if n + 1 < langs.len() {
                     divider(ui);
                 }
             }
         });
+
         card(ui, pal, |ui| {
-            let dir = self.cfg.dict_path();
             row(ui, "Dictionary folder", &dir.display().to_string(), |ui| {
                 if ui.button("Refresh").clicked() {
                     self.refresh_dicts();
@@ -656,11 +941,12 @@ impl App {
                 }
             });
             ui.add_space(4.0);
-            ui.label(RichText::new("Run get-dicts.cmd to download en.txt, ru.txt and uk.txt.").size(12.5).color(ui.visuals().weak_text_color()));
+            ui.label(weak(ui, "Word lists: FrequencyWords by Hermit Dave (CC-BY-SA 4.0), 50,000 most frequent words per language."));
         });
+
         section(ui, "Exceptions");
         card(ui, pal, |ui| {
-            ui.label(RichText::new("Words that must never be converted. One per line, lowercase.").size(12.5).color(ui.visuals().weak_text_color()));
+            ui.label(weak(ui, "Words that must never be converted. One per line, lowercase."));
             ui.add_space(4.0);
             ui.add(egui::TextEdit::multiline(&mut self.exceptions).desired_rows(7).desired_width(f32::INFINITY));
         });
@@ -679,6 +965,15 @@ impl App {
         ui.label("Keyboard layout switcher: automatic correction and hotkeys.");
         ui.add_space(14.0);
 
+        section(ui, "Project");
+        card(ui, pal, |ui| {
+            row(ui, "Source code and releases", GITHUB_URL, |ui| {
+                if ui.button("Open GitHub").clicked() {
+                    open_url(GITHUB_URL);
+                }
+            });
+        });
+
         section(ui, "Appearance");
         card(ui, pal, |ui| {
             row(ui, "Theme", "", |ui| {
@@ -695,84 +990,25 @@ impl App {
                 }
             });
         });
+
         section(ui, "Files");
         card(ui, pal, |ui| {
-            let path = Config::path().map(|p| p.display().to_string()).unwrap_or_default();
-            row(ui, "Settings file", &path, |ui| {
+            let dir = Config::dir().map(|p| p.display().to_string()).unwrap_or_default();
+            row(ui, "Data folder", &dir, |ui| {
                 if ui.button("Open folder").clicked() {
                     if let Some(d) = Config::dir() {
                         open_folder(&d);
                     }
                 }
             });
+            ui.add_space(4.0);
+            ui.label(weak(
+                ui,
+                "Settings, dictionaries and sounds live next to Retypr.exe. Move the whole program folder anywhere; relative paths keep working.",
+            ));
         });
-        ui.label(RichText::new("Changes are applied by the running Retypr automatically; no restart needed.").size(12.5).color(ui.visuals().weak_text_color()));
+        ui.label(weak(ui, "Changes are applied by the running Retypr automatically; no restart needed."));
     }
-}
-
-fn sound_item(ui: &mut egui::Ui, title: &str, path: &mut Option<PathBuf>, player: &Sounds, vol: f32) {
-    ui.label(RichText::new(title).size(15.0));
-    ui.horizontal(|ui| {
-        let w = (ui.available_width() - 260.0).max(120.0);
-        let mut text = path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
-        if ui.add(egui::TextEdit::singleline(&mut text).desired_width(w).hint_text("No sound")).changed() {
-            *path = if text.trim().is_empty() { None } else { Some(PathBuf::from(text.trim())) };
-        }
-        if ui.button("Browse…").clicked() {
-            if let Some(p) = rfd::FileDialog::new().add_filter("Audio", &["wav", "mp3", "ogg", "flac"]).pick_file() {
-                *path = Some(p);
-            }
-        }
-        if ui.add_enabled(path.is_some(), egui::Button::new("Test")).clicked() {
-            if let Some(p) = path.as_ref() {
-                player.play_file(p, vol);
-            }
-        }
-        if ui.add_enabled(path.is_some(), egui::Button::new("Clear")).clicked() {
-            *path = None;
-        }
-    });
-}
-
-fn app_list(ui: &mut egui::Ui, pal: &Pal, id: &str, list: &mut Vec<String>, input: &mut String) {
-    ui.push_id(id, |ui| {
-        let mut remove = None;
-        if list.is_empty() {
-            ui.label(RichText::new("No apps added yet.").italics().color(ui.visuals().weak_text_color()));
-        }
-        for (i, app) in list.iter().enumerate() {
-            ui.horizontal(|ui| {
-                keycap(ui, pal, app);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.small_button("Remove").clicked() {
-                        remove = Some(i);
-                    }
-                });
-            });
-        }
-        if let Some(i) = remove {
-            list.remove(i);
-        }
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(input).hint_text("e.g. notepad++.exe").desired_width(200.0));
-            let add = ui.button("Add").clicked();
-            if ui.button("Browse…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().add_filter("Programs", &["exe"]).pick_file() {
-                    if let Some(n) = p.file_name() {
-                        *input = n.to_string_lossy().to_lowercase();
-                    }
-                }
-            }
-            if add {
-                let v = input.trim().to_lowercase();
-                if !v.is_empty() && !list.iter().any(|x| x.eq_ignore_ascii_case(&v)) {
-                    list.push(v);
-                }
-                input.clear();
-            }
-        });
-    });
 }
 
 impl eframe::App for App {
@@ -863,7 +1099,7 @@ impl eframe::App for App {
                     Tab::Hotkeys => self.page_hotkeys(ui, &pal, &conflicts),
                     Tab::Apps => self.page_apps(ui, &pal),
                     Tab::Sounds => self.page_sounds(ui, &pal),
-                    Tab::Dict => self.page_dict(ui, &pal),
+                    Tab::Dict => self.page_dict(ui, &pal, ctx),
                     Tab::About => self.page_about(ui, &pal, ctx),
                 });
             });

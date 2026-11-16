@@ -1,47 +1,55 @@
-# Релизы и GitHub Actions
+# Releases and GitHub Actions
 
-## Что настроено
-| Файл | Когда запускается | Что делает |
+## What is configured
+
+| File | Runs when | What it does |
 |---|---|---|
-| `.github/workflows/ci.yml` | каждый push в `main` и каждый pull request | `cargo test` и release-сборка на Windows (обязательно), macOS и Linux (экспериментально — их падение не краснит проверку) |
-| `.github/workflows/release.yml` | push тега `v*` или вручную (Actions → Release → Run workflow) | собирает `Retypr-<версия>-windows-x64.zip`, `Retypr-<версия>-macos-universal.dmg`, `Retypr-<версия>-linux-x86_64.tar.gz`, считает SHA256 и создаёт **черновик** GitHub Release |
+| `.github/workflows/ci.yml` | every push to `main` and every pull request | `cargo test` and a release build on Windows (required), macOS and Linux (experimental: failures there do not fail the workflow) |
+| `.github/workflows/release.yml` | a tag `v*` is pushed, or manually (Actions > Release > Run workflow) | builds `Retypr-<version>-windows-x64.zip`, `Retypr-<version>-macos-universal.dmg` and `Retypr-<version>-linux-x86_64.tar.gz`, computes SHA-256 sums and creates a **draft** GitHub Release |
 
-## Первый запуск
+## First push
+
 ```bash
-cd retypr                      # корень проекта: здесь лежат Cargo.toml и папка .github
+cd retypr                      # the project root: Cargo.toml and the .github folder are here
 git init
 git add .
-git status                     # убедитесь, что в списке есть Cargo.lock и .github/workflows
+git status                     # make sure Cargo.lock and .github/workflows are listed
 git commit -m "Initial commit"
 git branch -M main
-git remote add origin https://github.com/<ваш-логин>/retypr.git
+git remote add origin https://github.com/DimmOFF/Retypr.git
 git push -u origin main
 ```
-Затем откройте вкладку **Actions** репозитория: там появится запуск CI.
 
-## Выпуск версии
-1. Поднимите `version` в `Cargo.toml` (например `0.1.0`) и закоммитьте.
-2. Поставьте тег и отправьте его:
+Then open the **Actions** tab: the CI run appears there.
+
+## Publishing a version
+
+1. Bump `version` in `Cargo.toml` (for example `0.1.0`) and commit.
+2. Tag and push:
    ```bash
    git tag v0.1.0
    git push origin v0.1.0
    ```
-   Тег **должен совпадать** с версией в `Cargo.toml` (`v0.1.0` ↔ `0.1.0`), иначе сборка остановится с понятной ошибкой.
-3. Когда сборка завершится, откройте **Releases** → черновик → проверьте файлы → **Publish release**.
+   The tag **must match** the version in `Cargo.toml` (`v0.1.0` and `0.1.0`), otherwise the build stops with a clear error.
+3. When the build finishes, open **Releases**, review the draft and its files, then press **Publish release**.
 
-Без тега: Actions → Release → Run workflow. Готовые пакеты появятся внизу страницы запуска в разделе **Artifacts**.
+Without a tag: Actions > Release > Run workflow. The packages appear under **Artifacts** at the bottom of the run page.
 
-## Подпись macOS (необязательно, нужна платная учётная запись Apple Developer)
-Settings → Secrets and variables → Actions → New repository secret:
-| Секрет | Что это |
+## macOS signing (optional, needs a paid Apple Developer account)
+
+Settings > Secrets and variables > Actions > New repository secret:
+
+| Secret | What it is |
 |---|---|
-| `APPLE_CERTIFICATE` | сертификат «Developer ID Application» в формате .p12, закодированный в base64: `base64 -i cert.p12 \| pbcopy` |
-| `APPLE_CERTIFICATE_PASSWORD` | пароль от .p12 |
-| `APPLE_SIGNING_IDENTITY` | например `Developer ID Application: Имя (TEAMID)` |
-| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | для нотаризации; пароль — «app-specific password» с appleid.apple.com |
-Без секретов DMG подписывается ad-hoc (на чужом Mac открывается через правую кнопку → Open).
+| `APPLE_CERTIFICATE` | the "Developer ID Application" certificate as .p12, base64-encoded: `base64 -i cert.p12 \| pbcopy` |
+| `APPLE_CERTIFICATE_PASSWORD` | the .p12 password |
+| `APPLE_SIGNING_IDENTITY` | for example `Developer ID Application: Name (TEAMID)` |
+| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | for notarization; the password is an app-specific password from appleid.apple.com |
 
-## Заметки
-* Windows: exe без цифровой подписи, SmartScreen может показать предупреждение «Неизвестный издатель».
-* Минуты Actions: для публичных репозиториев бесплатно; для приватных — квота, macOS «дороже» Windows и Linux.
-* Окончания строк закреплены в `.gitattributes`: `.sh` — LF, `.cmd` — CRLF (иначе скрипты ломаются).
+Without the secrets the DMG is signed ad-hoc (on another Mac it opens with right click > Open).
+
+## Notes
+
+* Windows: the executable is not code-signed, so SmartScreen may warn about an unknown publisher.
+* Actions minutes are free for public repositories; private repositories have a monthly quota, and macOS minutes cost more than Windows or Linux.
+* Line endings are pinned in `.gitattributes`: `.sh` files use LF and `.cmd` files use CRLF (scripts break otherwise).

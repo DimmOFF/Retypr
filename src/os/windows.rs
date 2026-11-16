@@ -1,7 +1,7 @@
-//! Нативный Windows-бэкенд: WH_KEYBOARD_LL / WH_MOUSE_LL, SendInput, раскладки (HKL).
+//! Native Windows backend: WH_KEYBOARD_LL / WH_MOUSE_LL hooks, SendInput, keyboard layouts (HKL).
 use super::{caret_plan, AfterConvert, KeyEvent, LayoutId, Step, K};
 use crate::hotkey::{DIGITS, FKEYS, LETTERS};
-use crate::layout_map::Lang;
+use crate::lang::Lang;
 use anyhow::{anyhow, Result};
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
@@ -15,7 +15,7 @@ use std::{
 use windows::{
     core::{w, HSTRING, PCWSTR, PWSTR},
     Win32::{
-        Foundation::{CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+        Foundation::{CloseHandle, BOOL, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
         System::{
             LibraryLoader::GetModuleHandleW,
             Threading::{
@@ -31,18 +31,18 @@ use windows::{
                 INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, MAP_VIRTUAL_KEY_TYPE, VIRTUAL_KEY,
             },
             WindowsAndMessaging::{
-                CallNextHookEx, DispatchMessageW, GetForegroundWindow, GetMessageW,
+                CallNextHookEx, DispatchMessageW, EnumWindows, GetForegroundWindow, GetMessageW, GetWindowTextW, IsIconic,
                 GetWindowThreadProcessId, MessageBoxW, PostMessageW, PostQuitMessage, SetTimer, SetWindowsHookExW,
                 TranslateMessage, MB_ICONERROR, MB_ICONWARNING, MB_OK,
                 HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WH_MOUSE_LL,
                 WM_INPUTLANGCHANGEREQUEST, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
-                WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP, SW_SHOWNORMAL,
+                WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP, SW_RESTORE, SW_SHOWNORMAL, SetForegroundWindow, ShowWindow, WM_CLOSE,
             },
         },
     },
 };
 
-/// Метка в dwExtraInfo: так хук отличает наш синтетический ввод от настоящего.
+/// Marker in dwExtraInfo: this is how the hook tells our synthetic input from real input.
 const MARK: usize = 0x5254_5950; // "RTYP"
 
 const VK_BACK: u16 = 0x08;
@@ -57,7 +57,7 @@ const VK_V: u16 = 0x56;
 type Handler = Box<dyn Fn(KeyEvent) -> bool + Send + Sync>;
 static HANDLER: OnceLock<Handler> = OnceLock::new();
 static LAST_FG: AtomicIsize = AtomicIsize::new(0);
-/// Имя exe активного окна (нижний регистр). Обновляется только при смене окна — не на каждую клавишу.
+/// Exe name of the focused window (lowercase). Updated only when the window changes, not on every key.
 static CUR_EXE: Mutex<String> = Mutex::new(String::new());
 
 fn exe_of(hwnd: HWND) -> String {
@@ -82,7 +82,7 @@ fn exe_of(hwnd: HWND) -> String {
     }
 }
 
-/// true, если активное окно сменилось (и тогда обновляет CUR_EXE).
+/// true if the focused window changed (CUR_EXE is refreshed then).
 fn refresh_fg(fg: HWND) -> bool {
     let v = fg.0 as isize;
     if LAST_FG.swap(v, Ordering::Relaxed) != v {
@@ -93,12 +93,12 @@ fn refresh_fg(fg: HWND) -> bool {
     }
 }
 
-/// Имя exe активного окна, напр. "code.exe".
+/// Exe name of the focused window, e.g. "code.exe".
 pub fn foreground_app() -> String {
     CUR_EXE.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
-// ───────────────────────── хуки ─────────────────────────
+// ───────────────────────── hooks ─────────────────────────
 
 unsafe extern "system" fn kb_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == 0 {
@@ -128,7 +128,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 unsafe fn on_key(wparam: WPARAM, lparam: LPARAM) -> bool {
     let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
     if kb.dwExtraInfo == MARK {
-        return false; // наш собственный ввод
+        return false; // our own synthetic input
     }
     let Some(h) = HANDLER.get() else { return false };
 
@@ -139,7 +139,7 @@ unsafe fn on_key(wparam: WPARAM, lparam: LPARAM) -> bool {
         return false;
     }
 
-    // Сменилось окно — слово больше не актуально
+    // The focused window changed: the current word is no longer relevant
     let fg = GetForegroundWindow();
     if refresh_fg(fg) {
         h(KeyEvent { down: true, key: K::Reset, text: String::new(), name: "" });
@@ -152,7 +152,7 @@ unsafe fn on_key(wparam: WPARAM, lparam: LPARAM) -> bool {
         0x5B | 0x5C => K::Meta,
         0x08 => K::Backspace,
         0x20 => K::Space,
-        // Tab, Enter, Esc, PgUp..Down, End, Home, стрелки, Ins, Del
+        // Tab, Enter, Esc, PgUp..PgDn, End, Home, arrows, Ins, Del
         0x09 | 0x0D | 0x1B | 0x21..=0x28 | 0x2D | 0x2E => K::Reset,
         _ => K::Char,
     };
@@ -160,7 +160,7 @@ unsafe fn on_key(wparam: WPARAM, lparam: LPARAM) -> bool {
     h(KeyEvent { down, key, text, name: vk_name(kb.vkCode) })
 }
 
-/// Виртуальный код → каноническое имя клавиши для горячих клавиш.
+/// Virtual-key code -> canonical key name used by hotkeys.
 fn vk_name(vk: u32) -> &'static str {
     match vk {
         0x13 => "pause",
@@ -192,7 +192,7 @@ fn vk_name(vk: u32) -> &'static str {
     }
 }
 
-/// vk -> символ в текущей раскладке активного окна (без побочных эффектов на «мёртвые» клавиши).
+/// vk -> the character in the focused window's current layout (without side effects on dead keys).
 unsafe fn translate(vk: u32, scan: u32, fg: HWND) -> String {
     let tid = GetWindowThreadProcessId(fg, None);
     let hkl = GetKeyboardLayout(tid);
@@ -205,7 +205,7 @@ unsafe fn translate(vk: u32, scan: u32, fg: HWND) -> String {
         st[0x14] = 1; // CapsLock
     }
     let mut buf = [0u16; 8];
-    // flag 0x4: не менять состояние dead-keys (Win10 1607+)
+    // flag 0x4: do not change the dead-key state (Windows 10 1607+)
     let n = ToUnicodeEx(vk, scan, &st, &mut buf, 0x4, hkl);
     if n > 0 {
         String::from_utf16_lossy(&buf[..n as usize])
@@ -214,7 +214,7 @@ unsafe fn translate(vk: u32, scan: u32, fg: HWND) -> String {
     }
 }
 
-/// Устанавливает хуки и крутит message loop. Блокирует поток.
+/// Installs the hooks and runs the message loop. Blocks the thread.
 pub fn run<F>(handler: F) -> Result<()>
 where
     F: Fn(KeyEvent) -> bool + Send + Sync + 'static,
@@ -235,13 +235,13 @@ where
     Ok(())
 }
 
-// ───────────────────────── раскладки ─────────────────────────
+// ───────────────────────── layouts ─────────────────────────
 
 fn hkl(id: LayoutId) -> HKL {
     HKL(id as *mut core::ffi::c_void)
 }
 
-/// Раскладка активного окна.
+/// Layout of the focused window.
 pub fn current_layout() -> LayoutId {
     unsafe {
         let fg = GetForegroundWindow();
@@ -250,7 +250,7 @@ pub fn current_layout() -> LayoutId {
     }
 }
 
-/// Все установленные в системе раскладки (в порядке системы).
+/// All layouts installed in the system (in system order).
 pub fn layouts() -> Vec<LayoutId> {
     unsafe {
         let mut buf = [HKL::default(); 64];
@@ -259,7 +259,7 @@ pub fn layouts() -> Vec<LayoutId> {
     }
 }
 
-/// Следующая раскладка по кругу.
+/// The next layout in the cycle.
 pub fn next_layout(id: LayoutId) -> LayoutId {
     let l = layouts();
     if l.len() < 2 {
@@ -271,17 +271,23 @@ pub fn next_layout(id: LayoutId) -> LayoutId {
     }
 }
 
-/// Язык раскладки (по LANGID): EN / RU / UK; остальные — None.
+/// Language of a layout (primary LANGID from the low word of the HKL). Works for any installed layout.
 pub fn layout_lang(id: LayoutId) -> Option<Lang> {
-    match (id as usize & 0x3FF) as u16 {
-        0x09 => Some(Lang::En),
-        0x19 => Some(Lang::Ru),
-        0x22 => Some(Lang::Uk),
-        _ => None,
-    }
+    Some(Lang::from_langid((id as usize & 0xFFFF) as u16))
 }
 
-/// Перевести текст, набранный в раскладке `from`, в то, что получилось бы при тех же клавишах в `to`.
+/// Languages of all installed layouts, in system order, without duplicates.
+pub fn installed_languages() -> Vec<Lang> {
+    let mut v: Vec<Lang> = vec![];
+    for l in layouts().into_iter().filter_map(layout_lang) {
+        if !v.contains(&l) {
+            v.push(l);
+        }
+    }
+    v
+}
+
+/// Translate text typed in layout `from` into what the same key presses would produce in layout `to`.
 pub fn convert(text: &str, from: LayoutId, to: LayoutId) -> String {
     if from == to {
         return text.to_string();
@@ -298,7 +304,7 @@ fn convert_char(c: char, hf: HKL, ht: HKL) -> char {
     unsafe {
         let r = VkKeyScanExW(u[0], hf);
         if r == -1 {
-            return c; // в исходной раскладке такой символ не набирается
+            return c; // this character cannot be typed in the source layout
         }
         let r = r as u16;
         let (vk, sh) = ((r & 0xFF) as u32, (r >> 8) as u8);
@@ -309,7 +315,7 @@ fn convert_char(c: char, hf: HKL, ht: HKL) -> char {
         let mut st = [0u8; 256];
         if sh & 1 != 0 { st[0x10] = 0x80; } // Shift
         if sh & 2 != 0 { st[0x11] = 0x80; } // Ctrl
-        if sh & 4 != 0 { st[0x12] = 0x80; } // Alt (вместе с Ctrl = AltGr)
+        if sh & 4 != 0 { st[0x12] = 0x80; } // Alt (together with Ctrl = AltGr)
         let mut buf = [0u16; 4];
         let n = ToUnicodeEx(vk, sc, &st, &mut buf, 0x4, ht);
         if n == 1 {
@@ -320,7 +326,7 @@ fn convert_char(c: char, hf: HKL, ht: HKL) -> char {
     }
 }
 
-/// Переключить раскладку активного окна на конкретную.
+/// Switch the focused window to a specific layout.
 pub fn switch_to(id: LayoutId) -> Result<()> {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -329,7 +335,7 @@ pub fn switch_to(id: LayoutId) -> Result<()> {
     Ok(())
 }
 
-// ───────────────────────── ввод ─────────────────────────
+// ───────────────────────── input ─────────────────────────
 
 fn ki(vk: u16, scan: u16, flags: u32) -> INPUT {
     INPUT {
@@ -349,7 +355,7 @@ fn vk(vk: u16, up: bool) -> INPUT {
     ki(vk, 0, if up { 0x0002 } else { 0 }) // KEYEVENTF_KEYUP
 }
 fn vk_ext(vk: u16, up: bool) -> INPUT {
-    ki(vk, 0, 0x0001 | if up { 0x0002 } else { 0 }) // KEYEVENTF_EXTENDEDKEY (стрелки)
+    ki(vk, 0, 0x0001 | if up { 0x0002 } else { 0 }) // KEYEVENTF_EXTENDEDKEY (arrow keys)
 }
 fn uni(unit: u16, up: bool) -> INPUT {
     ki(0, unit, 0x0004 | if up { 0x0002 } else { 0 }) // KEYEVENTF_UNICODE
@@ -364,7 +370,7 @@ fn send(inputs: &[INPUT]) {
     }
 }
 
-/// Стереть `erase` символов, напечатать `text` (Unicode, независимо от раскладки), переключить раскладку.
+/// Erase `erase` characters, type `text` (Unicode, independent of the layout), switch the layout.
 pub fn replace_typed(erase: usize, text: &str, to: LayoutId) -> Result<()> {
     let mut v = Vec::with_capacity(erase * 2 + text.len() * 2);
     for _ in 0..erase {
@@ -379,14 +385,14 @@ pub fn replace_typed(erase: usize, text: &str, to: LayoutId) -> Result<()> {
     switch_to(to)
 }
 
-/// Shift+Pause: скопировать выделение, отдать его в `f`, вставить результат,
-/// (опционально) выделить вставленное заново, вернуть буфер обмена.
+/// Selection conversion: copy the selection, hand it to `f`, paste the result,
+/// fix up selection/caret (see caret_plan), restore the clipboard.
 /// `f(selected, current_layout) -> Some((new_text, target_layout))`.
 pub fn convert_selection<F>(after: AfterConvert, f: F) -> Result<()>
 where
     F: FnOnce(&str, LayoutId) -> Option<(String, LayoutId)>,
 {
-    // Пользователь держит Shift (Shift+Pause) — иначе приложение увидит Ctrl+Shift+C
+    // The user is holding Shift (Shift+Pause); otherwise the app would see Ctrl+Shift+C
     send(&[vk(VK_LSHIFT, true), vk(VK_RSHIFT, true)]);
 
     let mut cb = arboard::Clipboard::new()?;
@@ -411,7 +417,7 @@ where
         if let Some((conv, target)) = f(&sel, cur) {
             cb.set_text(conv.clone())?;
             send(&[vk(VK_CONTROL, false), vk(VK_V, false), vk(VK_V, true), vk(VK_CONTROL, true)]);
-            sleep(Duration::from_millis(200)); // приложение должно успеть прочитать буфер
+            sleep(Duration::from_millis(200)); // give the app time to read the clipboard
             switch_to(target)?;
 
             // caret position / keep or drop the selection (see os::caret_plan)
@@ -442,40 +448,40 @@ where
     Ok(())
 }
 
-// ───────────────────────── приложение ─────────────────────────
+// ───────────────────────── application ─────────────────────────
 
-/// После горячей клавиши с Alt/Win: «замаскировать» их одиночное нажатие невидимой клавишей,
-/// иначе приложение откроет меню (Alt) или Пуск (Win).
+/// After a hotkey that includes Alt/Win: "mask" the lone Alt/Win tap with an invisible key,
+/// otherwise the app would open its menu (Alt) or the Start menu (Win).
 pub fn mask_menu() {
-    send(&[vk(0xE8, false), vk(0xE8, true)]); // 0xE8 — незанятый код, как в AutoHotkey
+    send(&[vk(0xE8, false), vk(0xE8, true)]); // 0xE8 is an unassigned code, the same trick AutoHotkey uses
 }
 
-/// Выйти из message loop (`run` вернёт управление).
+/// Leave the message loop (`run` returns).
 pub fn quit() {
     unsafe { PostQuitMessage(0) };
 }
 
-/// Показать сообщение об ошибке (в release консоли нет).
+/// Show an error message box (the release build has no console).
 pub fn fatal(msg: &str) {
     unsafe {
         MessageBoxW(HWND::default(), &HSTRING::from(msg), w!("Retypr"), MB_OK | MB_ICONERROR);
     }
 }
 
-/// Показать предупреждение (не критичное).
+/// Show a warning message box (non-critical).
 pub fn warn(msg: &str) {
     unsafe {
         MessageBoxW(HWND::default(), &HSTRING::from(msg), w!("Retypr"), MB_OK | MB_ICONWARNING);
     }
 }
 
-/// Запущен ли процесс с правами администратора (нужно, чтобы хук видел «админские» окна).
+/// Is the process running as administrator? (needed for the hook to see elevated windows)
 pub fn is_elevated() -> bool {
     unsafe { IsUserAnAdmin().as_bool() }
 }
 
-/// Запустить копию программы от администратора (покажет запрос UAC). Вызывающий должен затем завершиться;
-/// новая копия (флаг --restarted) дождётся освобождения единственного экземпляра.
+/// Start a copy of the program as administrator (shows a UAC prompt). The caller must then exit;
+/// the new copy (flag --restarted) waits until the single-instance lock is released.
 pub fn restart_elevated() -> Result<()> {
     let exe = std::env::current_exe()?;
     let r = unsafe {
@@ -503,10 +509,64 @@ unsafe extern "system" fn timer_proc(_h: HWND, _msg: u32, _id: usize, _time: u32
     }
 }
 
-/// Вызывать `f` каждые `ms` мс в главном потоке (из message loop). Нужно для обновления трея.
+/// Call `f` every `ms` milliseconds in the main thread (from the message loop). Used to refresh the tray.
 pub fn every(ms: u32, f: fn()) {
     let _ = TIMER_CB.set(f);
     unsafe {
         SetTimer(HWND::default(), 1, ms, Some(timer_proc));
+    }
+}
+
+// ───────────────────────── finding / focusing / closing a window by title ─────────────────────────
+
+static FOUND_HWND: AtomicIsize = AtomicIsize::new(0);
+static SEARCH_TITLE: Mutex<String> = Mutex::new(String::new());
+
+unsafe extern "system" fn enum_proc(hwnd: HWND, _lparam: LPARAM) -> BOOL {
+    let mut buf = [0u16; 256];
+    let n = GetWindowTextW(hwnd, &mut buf);
+    if n > 0 {
+        let title = String::from_utf16_lossy(&buf[..n as usize]);
+        if title == *SEARCH_TITLE.lock().unwrap_or_else(|p| p.into_inner()) {
+            FOUND_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
+            return BOOL(0); // found: stop enumerating
+        }
+    }
+    BOOL(1)
+}
+
+fn find_window(title: &str) -> Option<HWND> {
+    FOUND_HWND.store(0, Ordering::SeqCst);
+    *SEARCH_TITLE.lock().unwrap_or_else(|p| p.into_inner()) = title.to_string();
+    unsafe {
+        let _ = EnumWindows(Some(enum_proc), LPARAM(0));
+    }
+    match FOUND_HWND.load(Ordering::SeqCst) {
+        0 => None,
+        v => Some(HWND(v as *mut core::ffi::c_void)),
+    }
+}
+
+/// Bring the top-level window with exactly this title to the front (restoring it if minimized).
+/// Returns false if there is no such window.
+pub fn focus_window(title: &str) -> bool {
+    let Some(h) = find_window(title) else { return false };
+    unsafe {
+        if IsIconic(h).as_bool() {
+            let _ = ShowWindow(h, SW_RESTORE);
+        }
+        // A synthetic key tap satisfies Windows' "foreground lock", so SetForegroundWindow is honored.
+        send(&[vk(0xE8, false), vk(0xE8, true)]);
+        let _ = SetForegroundWindow(h);
+    }
+    true
+}
+
+/// Ask the window with this title to close (WM_CLOSE). Does nothing if there is none.
+pub fn close_window(title: &str) {
+    if let Some(h) = find_window(title) {
+        unsafe {
+            let _ = PostMessageW(h, WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
     }
 }

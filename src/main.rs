@@ -1,5 +1,5 @@
-// В release под Windows консоль не показываем (управление — через трей).
-// Для отладки с логами используйте `build.cmd debug`.
+// The release build on Windows has no console window (it is controlled from the tray).
+// For debugging with logs use `build.cmd debug`.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 #[cfg(windows)]
@@ -10,6 +10,7 @@ mod engine;
 mod hotkey;
 #[cfg(windows)]
 mod icon;
+mod lang;
 mod layout_map;
 mod os;
 #[cfg(windows)]
@@ -36,7 +37,7 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     env_logger::init();
 
-    // `retypr.exe --settings` — окно настроек (отдельный процесс, без хуков)
+    // `Retypr.exe --settings` opens the settings window (a separate process, no hooks)
     #[cfg(windows)]
     {
         if std::env::args().any(|a| a == "--settings") {
@@ -44,8 +45,8 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    // Один экземпляр. Второй запуск молча завершается; но после «Перезапустить от администратора»
-    // (флаг --restarted) ждём, пока прежняя копия освободит мьютекс.
+    // Single instance. A second launch silently exits; after "Restart as administrator" (flag --restarted)
+    // we wait until the previous copy releases the lock.
     const NAME: &str = "Retypr-6f1c9d3a-layout-switcher";
     let make = || single_instance::SingleInstance::new(NAME).map_err(|e| anyhow::anyhow!("single-instance: {e:?}"));
     let mut slot = Some(make()?);
@@ -54,7 +55,7 @@ fn run() -> anyhow::Result<()> {
             if slot.as_ref().is_some_and(|i| i.is_single()) {
                 break;
             }
-            drop(slot.take()); // закрыть свой дескриптор, иначе новый «увидит» мьютекс занятым
+            drop(slot.take()); // close our own handle, otherwise the new one would see the lock as taken
             std::thread::sleep(Duration::from_millis(150));
             slot = Some(make()?);
         }
@@ -67,6 +68,10 @@ fn run() -> anyhow::Result<()> {
     let cfg = config::Config::load_or_create()?;
     state::init(&cfg);
 
+    // the program folder may have been moved: keep "Start with Windows" pointing at this copy
+    #[cfg(windows)]
+    autostart::refresh_if_enabled();
+
     let (keys, warns) = hotkey::Bindings::from_config(&cfg.hotkeys);
     if !warns.is_empty() {
         os::warn(&format!("Problems in the [hotkeys] section of config.toml:\n\n{}", warns.join("\n")));
@@ -75,7 +80,7 @@ fn run() -> anyhow::Result<()> {
     #[cfg(windows)]
     {
         tray::init(&cfg.hotkeys.toggle_auto)?;
-        os::every(300, tray::tick);
+        os::every(150, tray::tick);
     }
 
     let hk = &cfg.hotkeys;
@@ -83,7 +88,7 @@ fn run() -> anyhow::Result<()> {
         "Retypr is running.  {} = word | {} = selection | {} = toggle auto | {} = toggle auto for app",
         hk.convert_word, hk.convert_selection, hk.toggle_auto, hk.toggle_app_auto
     );
-    println!("Config: {:?}", config::Config::dir());
+    println!("Data folder: {:?}", config::Config::dir());
 
     let engine = Arc::new(Mutex::new(engine::Engine::new(cfg, keys)));
     watch_config(engine.clone());
@@ -91,14 +96,18 @@ fn run() -> anyhow::Result<()> {
     let hook_engine = engine.clone();
     let res = os::run(move |ev| hook_engine.lock().unwrap_or_else(|p| p.into_inner()).handle(&ev));
 
+    // we are exiting (tray -> Exit, or restarting as administrator): close the settings window too
     #[cfg(windows)]
-    tray::shutdown();
+    {
+        os::close_window(tray::SETTINGS_TITLE);
+        tray::shutdown();
+    }
     drop(inst);
     res
 }
 
-/// Следит за config.toml: когда окно настроек (или вы вручную) сохраняет файл, применяет изменения без перезапуска.
-/// Тяжёлая часть (словари) выполняется здесь, вне потока хука, чтобы не задерживать клавиши.
+/// Watches config.toml: when the settings window (or you, by hand) saves it, the changes are applied without a
+/// restart. The heavy part (dictionaries) runs here, outside the hook thread, so keystrokes are never delayed.
 fn watch_config(engine: Arc<Mutex<engine::Engine>>) {
     let Some(path) = config::Config::path() else { return };
     std::thread::spawn(move || {
@@ -109,7 +118,7 @@ fn watch_config(engine: Arc<Mutex<engine::Engine>>) {
             if mtime() == last {
                 continue;
             }
-            std::thread::sleep(Duration::from_millis(250)); // дать дописать файл
+            std::thread::sleep(Duration::from_millis(250)); // let the writer finish
             last = mtime();
             match config::Config::load() {
                 Ok(cfg) => {
@@ -119,7 +128,7 @@ fn watch_config(engine: Arc<Mutex<engine::Engine>>) {
                     }
                     let det = detector::Detector::new(&cfg);
                     state::init(&cfg);
-                    state::mark_dirty(); // трей обновится в главном потоке
+                    state::mark_dirty(); // the tray refreshes in the main thread
                     engine.lock().unwrap_or_else(|p| p.into_inner()).reconfigure(&cfg, keys, det);
                     log::info!("config reloaded");
                 }

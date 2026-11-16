@@ -3,6 +3,10 @@ name = "retypr"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "Retypr"          # the executable is Retypr.exe (capital R)
+path = "src/main.rs"
+
 [dependencies]
 arboard = "3"
 rodio = { version = "0.19", default-features = false, features = ["wav", "mp3", "vorbis", "flac"] }
@@ -15,10 +19,11 @@ env_logger = "0.11"
 single-instance = "0.3"
 
 [target.'cfg(windows)'.dependencies]
-eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"] }  # окно настроек (egui)
-rfd = { version = "0.15", default-features = false }  # диалог выбора файла
-tray-icon = "0.19"   # иконка в трее + меню (muda внутри)
-winreg = "0.52"      # автозапуск (HKCU\\...\\Run)
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"] }  # settings window (egui)
+ureq = "2"   # dictionary download in Settings
+rfd = { version = "0.15", default-features = false }  # file picker dialog
+tray-icon = "0.19"   # tray icon + menu (muda inside)
+winreg = "0.52"      # start with Windows (HKCU\...\Run)
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
@@ -28,13 +33,13 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# Не-Windows пока работает через rdev + enigo (best effort)
+# Non-Windows platforms use rdev + enigo for now (best effort)
 [target.'cfg(not(windows))'.dependencies]
 rdev = { version = "0.5", features = ["unstable_grab"] }
 enigo = "0.2"
 
 [target.'cfg(windows)'.build-dependencies]
-winresource = "0.1"   # иконка, манифест и версия в exe
+winresource = "0.1"   # icon, manifest and version in the exe
 
 [profile.release]
 opt-level = 3

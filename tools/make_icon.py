@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Генерирует assets/retypr.ico: синий круг с белой буквой R (PNG внутри ICO, 16–256 px)."""
+"""Generates assets/retypr.ico (blue disc with a white R, PNGs inside the ICO, 16-256 px) and assets/retypr-1024.png."""
 import struct, zlib, os
 
 GLYPH = ["1111.", "1...1", "1...1", "1111.", "1.1..", "1..1.", "1...1"]
 BLUE = (0x2E, 0x7D, 0xF6)
-SS = 4  # суперсэмплинг для сглаживания
+SS = 4  # supersampling for anti-aliasing
 
 
 def render(size, ss=SS):
     n = size * ss
-    # маска буквы в нормированных координатах (0..1)
+    # letter mask in normalized coordinates (0..1)
     gw, gh = 5, 7
-    scale = 0.62 / gh            # высота буквы ≈ 62% диаметра
+    scale = 0.62 / gh            # letter height is about 62% of the diameter
     ox = 0.5 - gw * scale / 2
     oy = 0.5 - gh * scale / 2
 

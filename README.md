@@ -1,141 +1,167 @@
-# Retypr — переключатель раскладки на Rust (аналог PuntoSwitcher, каркас)
+# Retypr
 
-Горячие клавиши:
-- **Pause** — конвертировать последнее слово (повторно — вернуть обратно)
-- **Shift+Pause** — конвертировать выделенный текст
-- **Alt+Pause** — вкл/выкл автопереключение
+A keyboard layout switcher in the spirit of Punto Switcher: it fixes text typed in the wrong layout, either
+automatically or with hotkeys. Written in Rust.
 
-Конфиг: `~/.config/retypr/config.toml` (Linux), `%APPDATA%\retypr\config\config.toml` (Windows),
-`~/Library/Application Support/retypr/config.toml` (macOS).
-Свои звуки — пути к wav/mp3/ogg/flac в секции `[sounds]`.
-Словари: `<config>/dict/en.txt` и `ru.txt` (по слову в строке, напр. из hunspell).
+**Windows is the main target.** The macOS and Linux ports are experimental (see [Platform status](#platform-status)).
 
-Статус: Windows — реализовано; Linux/X11 — через `xkb-switch`; macOS — заглушка (TIS API).
+## Features
 
-## Сборка
+* **Automatic correction** - when you finish a word with Space, a word typed in the wrong layout is replaced
+  (for example `ghbdtn` becomes `привет`) and the layout is switched.
+* **Works with any layouts installed in Windows** - nothing is hard-wired to a particular language pair.
+* **Hotkeys** (all configurable):
 
-| Платформа | Скрипт | Результат |
-|---|---|---|
-| Windows | `build.cmd [debug]` | `dist\windows-x64\retypr.exe` |
-| Linux (X11) | `./build.sh [debug] [--install-deps]` | `dist/linux-<arch>/retypr` |
-| macOS | `./build-macos.sh [debug]` | `dist/macos-universal/retypr` (arm64 + x86_64) |
+  | Default | Action |
+  |---|---|
+  | `Pause` | Convert the last word. Press again to cycle through **all** installed layouts. |
+  | `Shift+Pause` | Convert the selected text (same cycling, the selection is kept by default). |
+  | `Alt+Pause` | Turn auto-switching on or off. |
+  | `Alt+Shift+Pause` | Turn auto-switching on or off for the current application. |
 
-Предварительно везде нужен Rust (https://rustup.rs).
-- Windows: Visual Studio Build Tools (MSVC, «Desktop development with C++»).
-- Linux: `libx11-dev libxtst-dev libxi-dev libxkbcommon-dev libxdo-dev libevdev-dev libasound2-dev` и `xkb-switch` (`--install-deps` поставит сам для apt/dnf/pacman).
-- macOS: Xcode Command Line Tools; выдать приложению Accessibility и Input Monitoring.
+* **Per-application rules** - keep auto-switching off in IDEs and terminals, or switch Retypr off completely in games.
+* **Dictionaries** - download word lists per language in *Settings > Dictionaries*, enable or disable each one.
+* **Sounds** - a sound for manual conversion, automatic correction and selection conversion (defaults included).
+* **Tray icon** that shows the state at a glance (see below) and a modern settings window.
+* **Portable** - settings live next to `Retypr.exe`.
 
-## Windows: особенности
-- Хук — нативный (`WH_KEYBOARD_LL`/`WH_MOUSE_LL`), свой ввод помечается через `dwExtraInfo`, поэтому не ловит сам себя.
-- Раскладки переключаются на конкретные KLID: EN = `00000409`, RU = `00000419` (см. `os/windows.rs`, `switch_to`).
-- Окна, запущенные от администратора, не видят хуков обычного процесса (UIPI) — для них запускайте Retypr от администратора.
-- В классической консоли (conhost) смена раскладки через `WM_INPUTLANGCHANGEREQUEST` может не работать; Windows Terminal — работает.
-- Release-сборка работает **без окна консоли**: управление через значок в трее
-  (авто вкл/выкл, звуки, автозапуск с Windows, папка настроек, выход).
-  Для отладки с логами: `build.cmd debug` и `set RUST_LOG=debug`.
-- Второй запуск ничего не делает (один экземпляр). Критические ошибки показываются окном сообщения.
-- Автозапуск — запись в `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; выбор авто/звуков сохраняется в `config.toml`.
+## Getting started
 
-## Несколько раскладок
-Pause и Shift+Pause листают **все** раскладки, установленные в Windows, по кругу
-(например EN → RU → UK → EN → …). Конвертация идёт через сами раскладки системы
-(`VkKeyScanEx` + `ToUnicodeEx`), поэтому подходят любые языки.
-Повторное нажатие всегда считает от исходного текста, а не от предыдущего результата.
-После Shift+Pause вставленный текст по умолчанию снова выделяется (отключается: `deselect_after_convert = true`),
-чтобы следующим Shift+Pause можно было перейти к следующей раскладке.
-Автопереключение (детектор по словарям) пока работает для пары EN ↔ RU.
+1. Download the release zip, unpack it anywhere and run `Retypr.exe`. A tray icon appears.
+2. Right-click the tray icon > **Settings...** > **Dictionaries**, then **Download** a word list for each language
+   you type in. Detection works best with dictionaries. English, Russian and Ukrainian also have built-in rules,
+   so they work (less accurately) without a dictionary.
+3. Optional: turn on **Start with Windows** from the tray menu or *Settings > General*.
 
-## Автоопределение раскладки
-Для хорошего качества скачайте словари: `get-dicts.cmd` (кладёт `en.txt` и `ru.txt` в `%APPDATA%\retypr\config\dict\`),
-затем перезапустите Retypr. Список слов-исключений — `dict\exceptions.txt` (по слову в строке, `#` — комментарий).
+Windows may show a SmartScreen warning because the executable is not code-signed.
 
-Как принимается решение:
-1. Слово пропускается, если в нём есть цифры, скобки/слэши/`@` (код, пути, адреса), смесь алфавитов,
-   оно короче `min_word_len` или это АКРОНИМ (все буквы заглавные).
-2. Со словарями: слово есть в своём языке → не трогаем; его конвертация есть в другом → переключаем.
-3. Для слов, которых нет в словарях (имена, сленг), и когда словарей нет — эвристика: оригинал фонетически
-   невозможен (нет гласных, ≥5 согласных подряд, `жы`, `ы` в начале, `[`/`;` внутри слова…), а конвертация возможна.
-   Эвристика намеренно строгая: лучше пропустить, чем испортить правильное слово.
+## Tray icon
 
-Проверка логики без сборки exe: `cargo test`.
+| Icon | Meaning |
+|---|---|
+| Blue disc | Auto-switching is on. |
+| Gray disc | Auto-switching is off, or Retypr is disabled for the focused app. |
+| Disc split along the diagonal (blue upper-left, gray lower-right) | Auto-switching is on, but paused for the focused app (it is in the *No auto-switching* list). |
 
-## Исключения по приложениям
-В `config.toml`:
-- `auto_exclude_apps` — приложения (имя exe), где отключено **только автопереключение**; ручные Pause/Shift+Pause работают.
-  По умолчанию: VS Code, Visual Studio, JetBrains IDE, Windows Terminal, cmd, PowerShell, PuTTY.
-- `disabled_apps` — Retypr **полностью выключен** (в т.ч. Pause доходит до приложения): игры, удалённые рабочие столы и т.п.
+The tray menu: Settings, Auto-switching, Sounds, Start with Windows, Open settings folder, Restart as
+administrator, Exit. Choosing *Settings* while the window is already open brings it to the front. *Exit* also closes
+the settings window.
 
-Быстрый способ: **Alt+Shift+Pause** в нужном окне — включает/выключает автопереключение для этого приложения
-(сохраняется в `auto_exclude_apps`; можно задать звук `sounds.on_rule_toggle`).
-Имена exe — в нижнем регистре, например `"notepad++.exe"`. Правки конфига применяются после перезапуска.
+## Portable mode
 
-## Горячие клавиши (настраиваются)
-Раздел `[hotkeys]` в `config.toml`:
+Everything Retypr stores lives in a `data` folder **next to `Retypr.exe`**:
+
+```
+Retypr.exe
+data/
+  config.toml
+  dict/        word lists (en.txt, ru.txt, ...) and exceptions.txt
+  sounds/      sound files
+```
+
+* Move or copy the whole program folder anywhere - nothing breaks. Paths in `config.toml` may be **relative**; they
+  are resolved against the `data` folder. Sound files you pick in the settings are copied into `data/sounds`
+  so they stay portable.
+* *Start with Windows* repoints itself to the new location the next time Retypr starts.
+* If the program folder is not writable (for example *Program Files*), Retypr falls back to
+  `%APPDATA%\retypr\config`. Set the `RETYPR_DATA_DIR` environment variable to force a folder.
+* Settings from older versions (`%APPDATA%\retypr`) are not used any more.
+
+## Hotkeys
+
+Edit them in *Settings > Hotkeys* or in `config.toml`:
+
 ```toml
 [hotkeys]
-convert_word      = "Pause"             # слово; повторное нажатие — следующая раскладка
-convert_selection = "Shift+Pause"       # выделенный текст
-toggle_auto       = "Alt+Pause"         # автопереключение вкл/выкл
-toggle_app_auto   = "Alt+Shift+Pause"   # автопереключение для текущего приложения
+convert_word      = "Pause"
+convert_selection = "Shift+Pause"
+toggle_auto       = "Alt+Pause"
+toggle_app_auto   = "Alt+Shift+Pause"
 ```
-Формат: `Модификаторы+Клавиша`, модификаторы `Ctrl`, `Alt`, `Shift`, `Win`. Клавиши: `Pause`, `Break` (= Ctrl+Pause),
-`ScrollLock`, `CapsLock`, `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `PrintScreen`, `Menu`,
-`Space`, `Tab`, `Enter`, `Esc`, стрелки (`Left`…), `F1`–`F24`, `A`–`Z`, `0`–`9`, `Grave` (`` ` ``).
-Для ноутбуков без Pause, например: `convert_word = "Ctrl+Alt+Space"`, `convert_selection = "Ctrl+Alt+Shift+Space"`.
-Ошибки в записи показываются при запуске, а проблемная привязка заменяется значением по умолчанию.
-Изменения применяются после перезапуска.
 
-## Языки автоопределения (EN / RU / UK)
-Автопереключение работает между **установленными в системе** раскладками из списка `auto_languages` в `config.toml`:
-```toml
-auto_languages = ["en", "ru", "uk"]   # например ["en", "uk"], если русская раскладка не нужна для авто
-```
-Для каждого слова детектор пробует все раскладки-кандидаты. Побеждает та, чей словарь подтвердил слово
-(`dict\uk.txt` скачивает `get-dicts.cmd`); без словарей берётся первая подходящая по эвристике в порядке системы.
-Если у вас RU и UK одновременно, обязательно скачайте словари — эвристика не отличает «привыт» от «привіт».
-Ручные Pause / Shift+Pause по-прежнему листают **все** раскладки системы.
+Format: modifiers (`Ctrl`, `Alt`, `Shift`, `Win`) plus one key: `Pause`, `Break` (= Ctrl+Pause), `ScrollLock`,
+`CapsLock`, `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `PrintScreen`, `Menu`, `Space`, `Tab`, `Enter`,
+`Esc`, arrows, `F1`-`F24`, `A`-`Z`, `0`-`9`, `Grave`. For keyboards without a Pause key try
+`Ctrl+Alt+Space`.
 
-## Иконка, манифест и права администратора
-- `build.rs` встраивает в `retypr.exe` иконку (`assets/retypr.ico`), манифест и версию. Нужен Windows SDK (`rc.exe`),
-  он ставится с Visual Studio Build Tools; если его нет — сборка проходит, но exe будет без иконки (см. предупреждение cargo).
-  Перегенерировать иконку: `python tools/make_icon.py`.
-- Манифест — `asInvoker` (обычный запуск, без UAC при старте).
-- Окна, запущенные от администратора, не пропускают чужие хуки (UIPI). Для них в меню трея есть пункт
-  **«Перезапустить от администратора»** (запрос UAC; пока запущены с админ-правами, пункт показывает ✓).
-- Автозапуск (реестр) стартует программу **без** повышения прав. Чтобы автозапускаться от администратора,
-  понадобится задача планировщика с флагом «Выполнять с наивысшими правами» (в планах).
+## Per-application rules
 
-## Окно настроек
-Меню трея → **«Настройки…»** (или `retypr.exe --settings`). Вкладки: основные (авто, языки, длина слова, автозапуск),
-горячие клавиши (модификаторы + клавиша из списка, проверка конфликтов), приложения (списки исключений с выбором exe),
-звуки (выбор файла, кнопка «Тест», громкость), словари (счётчики слов, слова-исключения), о программе.
-Окно — отдельный процесс; после «Сохранить» работающий Retypr подхватывает `config.toml` сам (≈1 с, без перезапуска).
-UI построен на egui/eframe (OpenGL 2+). Первая сборка с eframe заметно дольше обычной.
+* **No auto-switching** (`auto_exclude_apps`) - the manual hotkeys still work. Defaults: VS Code, Visual Studio,
+  JetBrains IDEs, Windows Terminal, cmd, PowerShell, PuTTY.
+* **Retypr disabled** (`disabled_apps`) - all keys, including Pause, pass through untouched. Games, remote desktops.
+* Press `Alt+Shift+Pause` in any window to toggle the first list for that app.
 
-## Язык интерфейса
-Интерфейс (окно настроек, меню трея, сообщения) — по умолчанию английский. Локализация на другие языки — в планах
-(шрифт Segoe UI уже подключается, он покрывает кириллицу). Тему окна (тёмная/светлая/системная) можно выбрать
-на вкладке About.
+Names are executable names in lowercase, for example `code.exe`.
 
-## Выделенный текст: выделение и каретка
-Две настройки (вкладка General → «Converting selected text» или `config.toml`):
-```toml
-deselect_after_convert = false   # true — снять выделение после конвертации
-caret_after_convert    = "right" # "left" или "right" — с какой стороны от текста остаётся каретка
-```
-Комбинации: выделение снято + «right» — каретка сразу после текста; снято + «left» — в начале текста;
-выделение сохранено — оно остаётся, а «left»/«right» задаёт, с какого конца активна каретка (куда пойдут Shift+стрелки).
-Повторное нажатие горячей клавиши перебирает раскладки дальше, только если выделение сохранено.
-Старая настройка `reselect_after_convert` больше не используется.
+## Dictionaries and detection
 
-## macOS: сборка DMG
-На Mac (нужны Xcode Command Line Tools и Rust): `./build-macos.sh` → `dist/Retypr-<версия>-macos-universal.dmg`
-(универсальный бинарник arm64 + x86_64, `Retypr.app` с иконкой и Info.plist, подпись, образ диска).
-Параметры: `--no-dmg` (только .app), `--run` (открыть результат). Переменные окружения:
-`CODESIGN_IDENTITY` (по умолчанию `-` = ad-hoc; для распространения — "Developer ID Application: …"),
-`NOTARY_PROFILE` (нотаризация через notarytool), `LSUIELEMENT=false` (показывать иконку в Dock).
-Если установлен `create-dmg` (`brew install create-dmg`), окно образа получается с красивой раскладкой.
-Ограничения macOS-версии: нет значка в строке меню и окна настроек, не реализовано переключение системной раскладки.
+Auto-switching considers every layout installed in Windows. For a finished word, Retypr tries each other layout:
 
-## CI и релизы
-GitHub Actions (проверка при каждом коммите и сборка релизов по тегу `v*`): см. [RELEASING.md](RELEASING.md).
+1. Words with digits, mixed scripts, brackets or slashes (code, paths), acronyms (`USB`) and words in
+   `dict/exceptions.txt` are left alone.
+2. If the word is in the dictionary of its own language it is left alone. If its conversion is in the dictionary of
+   another installed language, it is converted to that layout.
+3. Words unknown to the dictionaries (names, slang) are judged by strict built-in rules (English, Russian and
+   Ukrainian only) and only between layouts of different scripts. Other languages need a dictionary.
+
+*Settings > Dictionaries* lists the installed layouts. For each one you can enable or disable it, and
+**Download / Update** its word list (the 50,000 most frequent words from the
+[FrequencyWords](https://github.com/hermitdave/FrequencyWords) project, CC-BY-SA 4.0). A running Retypr reloads
+dictionaries automatically. Not every language has a list available.
+
+## Configuration reference
+
+`data/config.toml` - the settings window edits it, and a running Retypr applies changes within about a second.
+
+| Key | Meaning |
+|---|---|
+| `auto_switch` | Automatic correction on/off. |
+| `min_word_len` | Words shorter than this are never corrected automatically. |
+| `disabled_languages` | Language codes (`"de"`, `"ru"`...) excluded from auto-switching. Empty = all installed layouts take part. |
+| `auto_exclude_apps`, `disabled_apps` | Per-application rules (see above). |
+| `deselect_after_convert` | `true`: remove the selection after converting selected text. Default `false`: keep it, so the hotkey can be pressed again to cycle layouts. |
+| `caret_after_convert` | `"left"` or `"right"`: which end of the converted text the caret ends up at. |
+| `theme` | Settings window theme: `"system"`, `"light"` or `"dark"`. |
+| `dict_dir` | Optional dictionary folder (absolute or relative to `data`). Default `data/dict`. |
+| `[sounds]` | `enabled`, `volume` (0.0-1.0, default 0.3) and `on_manual_switch`, `on_auto_switch`, `on_selection_convert`, `on_rule_toggle`: file paths, absolute or relative to `data`; empty = no sound. |
+| `[hotkeys]` | See above. |
+
+## Building
+
+You need [Rust](https://rustup.rs). On Windows also the Visual Studio Build Tools with the *Desktop development with C++* workload.
+
+| Platform | Command | Result |
+|---|---|---|
+| Windows | `build.cmd` | `dist\windows-x64\Retypr.exe` |
+| macOS | `./build-macos.sh` | `dist/Retypr-<version>-macos-universal.dmg` |
+| Linux | `./build.sh --install-deps` | `dist/linux-<arch>/Retypr` |
+
+`build.cmd` options: `debug` (console window with logs), `run` (start after building), `rebuild` (clean rebuild of the
+crate). The script refreshes file timestamps when sources changed, so Cargo never reuses a stale build.
+
+macOS options and signing variables are described at the top of `build-macos.sh`.
+
+Run the unit tests with `cargo test`.
+
+## Platform status
+
+* **Windows** - full feature set.
+* **macOS** - builds a universal `.dmg`, but there is no menu bar icon or settings window yet and switching the system
+  input source is not implemented (text is converted, the layout must be switched by hand). The Accessibility and
+  Input Monitoring permissions are required. Settings live in `~/Library/Application Support/retypr`.
+* **Linux** - X11 only, two layouts, experimental.
+
+## Troubleshooting
+
+* **Hotkeys do nothing in some windows** - those windows run as administrator. Use the tray item
+  *Restart as administrator*.
+* **Auto-switching misbehaves in a program** - add its executable to the *No auto-switching* list.
+* **The exe in `dist` is old** - run `build.cmd rebuild`.
+
+## Releases
+
+GitHub Actions builds and publishes releases; see [RELEASING.md](RELEASING.md).
+
+## Links
+
+Source code: <https://github.com/DimmOFF/Retypr>

@@ -23,7 +23,7 @@ for %%A in (%*) do (
     if /i "%%A"=="rebuild" set "REBUILD=1"
 )
 
-set "SRC=target\x86_64-pc-windows-msvc\%PROFILE%\retypr.exe"
+set "SRC=target\x86_64-pc-windows-msvc\%PROFILE%\Retypr.exe"
 set "OUT=dist\windows-x64"
 
 where cargo >nul 2>nul
@@ -71,29 +71,28 @@ if not exist "%OUT%" mkdir "%OUT%"
 rem --- copy with retries (antivirus / explorer may hold the file for a moment) ---
 set TRIES=0
 :copy_retry
-copy /y "%SRC%" "%OUT%\retypr.exe" >nul 2>nul
+copy /y "%SRC%" "%OUT%\Retypr.exe" >nul 2>nul
 if not errorlevel 1 goto :copied
 set /a TRIES+=1
 if %TRIES% lss 5 (
     timeout /t 1 /nobreak >nul
     goto :copy_retry
 )
-echo [ERROR] Could not copy retypr.exe to %OUT% - the file is locked by another process.
+echo [ERROR] Could not copy Retypr.exe to %OUT% - the file is locked by another process.
 set RC=1
 goto :end
 
 :copied
 copy /y README.md "%OUT%\" >nul 2>nul
-copy /y get-dicts.cmd "%OUT%\" >nul 2>nul
 
 echo.
 echo [OK] Built:  %SRC%
 for %%F in ("%SRC%") do echo      source: %%~tF   %%~zF bytes
-for %%F in ("%OUT%\retypr.exe") do echo      dist:   %%~tF   %%~zF bytes
+for %%F in ("%OUT%\Retypr.exe") do echo      dist:   %%~tF   %%~zF bytes
 
 if "%RUN_AFTER%"=="1" (
-    echo [INFO] Starting %OUT%\retypr.exe ...
-    start "" "%OUT%\retypr.exe"
+    echo [INFO] Starting %OUT%\Retypr.exe ...
+    start "" "%OUT%\Retypr.exe"
 )
 
 :end

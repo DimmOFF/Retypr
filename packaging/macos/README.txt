@@ -4,7 +4,7 @@ Retypr - keyboard layout switcher
 INSTALL
   1. Drag Retypr.app onto the Applications folder.
   2. First launch: right-click Retypr.app -> Open -> Open.
-     (If macOS still refuses: run in Terminal
+     (If macOS still refuses, run in Terminal:
       xattr -dr com.apple.quarantine /Applications/Retypr.app )
 
 PERMISSIONS (required, otherwise the keyboard hook receives nothing)
@@ -15,12 +15,13 @@ PERMISSIONS (required, otherwise the keyboard hook receives nothing)
 
 QUIT
   Retypr runs in the background without a Dock icon.
-  Quit it with:  pkill retypr    (or Activity Monitor -> Retypr -> Quit)
+  Quit it with:  pkill Retypr    (or Activity Monitor -> Retypr -> Quit)
 
 CONFIG
   ~/Library/Application Support/retypr/config.toml
-  Dictionaries (better automatic detection): run get-dicts.sh from this disk image
-  (Terminal: bash "/Volumes/Retypr/get-dicts.sh").
+  (inside an app bundle the portable "data" folder is not used; see the project README.)
+  Dictionaries for better automatic detection are downloaded from Retypr's Settings window
+  on Windows; on macOS put <language>.txt word lists into the "dict" folder next to config.toml.
 
 KNOWN LIMITATIONS OF THE macOS BUILD
   The macOS port is still early: there is no menu bar icon or settings window yet

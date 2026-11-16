@@ -1,30 +1,10 @@
-//! Статические таблицы раскладок (по физическим клавишам). Нужны детектору в тестах и не-Windows бэкенду;
-//! на Windows реальная конвертация идёт через сами раскладки системы (см. os/windows.rs).
+//! Static key tables for the EN / RU / UK layouts. They are used by the non-Windows backend and in tests;
+//! on Windows the real conversion goes through the system layouts themselves (see os/windows.rs),
+//! so it works for any installed layout.
+use crate::lang::Lang;
 use std::{collections::HashMap, sync::OnceLock};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Lang {
-    En,
-    Ru,
-    Uk,
-}
-
-impl Lang {
-    pub fn is_cyrillic(self) -> bool {
-        self != Lang::En
-    }
-
-    pub fn from_code(s: &str) -> Option<Lang> {
-        match s.trim().to_lowercase().as_str() {
-            "en" => Some(Lang::En),
-            "ru" => Some(Lang::Ru),
-            "uk" | "ua" => Some(Lang::Uk),
-            _ => None,
-        }
-    }
-}
-
-// Строки выровнены по физическим клавишам: строка 1, 2, 3, ` и \ — сначала без Shift, затем с Shift.
+// Rows are aligned by physical key: rows 1-3, then ` and \ - first without Shift, then with Shift.
 const EN: &str = "qwertyuiop[]asdfghjkl;'zxcvbnm,./`\\QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>?~|";
 const RU: &str = "йцукенгшщзхъфывапролджэячсмитьбю.ё\\ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,Ё/";
 const UK: &str = "йцукенгшщзхїфівапролджєячсмитьбю.'ґЙЦУКЕНГШЩЗХЇФІВАПРОЛДЖЄЯЧСМИТЬБЮ,₴Ґ";
@@ -43,31 +23,39 @@ fn build(s: &str) -> Table {
     Table { chars, idx }
 }
 
-fn table(l: Lang) -> &'static Table {
+fn table(l: Lang) -> Option<&'static Table> {
     static ALL: OnceLock<[Table; 3]> = OnceLock::new();
-    &ALL.get_or_init(|| [build(EN), build(RU), build(UK)])[l as usize]
+    let all = ALL.get_or_init(|| [build(EN), build(RU), build(UK)]);
+    match l {
+        Lang::EN => Some(&all[0]),
+        Lang::RU => Some(&all[1]),
+        Lang::UK => Some(&all[2]),
+        _ => None,
+    }
 }
 
 pub fn is_cyrillic(c: char) -> bool {
     ('\u{0400}'..='\u{04FF}').contains(&c)
 }
 
-/// Текст, набранный в раскладке `from`, → тот же набор клавиш в раскладке `to`.
+/// Text typed in layout `from` -> the same key presses in layout `to` (unchanged if either layout has no table).
 pub fn convert_between(text: &str, from: Lang, to: Lang) -> String {
     if from == to {
         return text.to_string();
     }
-    let (f, t) = (table(from), table(to));
+    let (Some(f), Some(t)) = (table(from), table(to)) else {
+        return text.to_string();
+    };
     text.chars().map(|c| f.idx.get(&c).map(|&i| t.chars[i]).unwrap_or(c)).collect()
 }
 
+/// Simplified: contains Cyrillic -> RU->EN, otherwise EN->RU (non-Windows backend and tests).
 #[allow(dead_code)]
-/// Упрощённо: есть кириллица → RU→EN, иначе EN→RU (для не-Windows бэкенда и тестов).
 pub fn convert(text: &str) -> String {
     if text.chars().any(is_cyrillic) {
-        convert_between(text, Lang::Ru, Lang::En)
+        convert_between(text, Lang::RU, Lang::EN)
     } else {
-        convert_between(text, Lang::En, Lang::Ru)
+        convert_between(text, Lang::EN, Lang::RU)
     }
 }
 
@@ -96,17 +84,22 @@ mod tests {
 
     #[test]
     fn en_uk() {
-        assert_eq!(convert_between("ghbdsn", Lang::En, Lang::Uk), "привіт");
-        assert_eq!(convert_between("ghbdsn", Lang::En, Lang::Ru), "привыт");
-        assert_eq!(convert_between("\\", Lang::En, Lang::Uk), "ґ");
-        assert_eq!(convert_between("ghbdsn", Lang::En, Lang::En), "ghbdsn");
+        assert_eq!(convert_between("ghbdsn", Lang::EN, Lang::UK), "привіт");
+        assert_eq!(convert_between("ghbdsn", Lang::EN, Lang::RU), "привыт");
+        assert_eq!(convert_between("\\", Lang::EN, Lang::UK), "ґ");
+        assert_eq!(convert_between("ghbdsn", Lang::EN, Lang::EN), "ghbdsn");
     }
 
     #[test]
     fn ru_uk() {
-        // те же клавиши: ы → і, э → є
-        assert_eq!(convert_between("привыт", Lang::Ru, Lang::Uk), "привіт");
-        assert_eq!(convert_between("привіт", Lang::Uk, Lang::En), "ghbdsn");
+        // same keys: ы -> і, э -> є
+        assert_eq!(convert_between("привыт", Lang::RU, Lang::UK), "привіт");
+        assert_eq!(convert_between("привіт", Lang::UK, Lang::EN), "ghbdsn");
+    }
+
+    #[test]
+    fn unknown_language_is_left_alone() {
+        assert_eq!(convert_between("hallo", Lang::EN, Lang(0x07)), "hallo");
     }
 
     #[test]
