@@ -168,6 +168,11 @@ impl Detector {
                 }
             }
         }
+        // Very short words (2 letters) are converted only when a dictionary confirms it: "tv", "pc", "cd" are
+        // phonetically odd but perfectly valid, and the built-in rules cannot tell.
+        if o.chars().count() < 3 {
+            return Verdict::No;
+        }
         // Unknown to the dictionaries (names, slang) or no dictionaries: strict rules, and only between
         // layouts of different scripts (Latin <-> non-Latin). Same-script pairs rely on dictionaries alone.
         let cross_script = fl.is_latin() != tl.is_latin();
@@ -422,6 +427,20 @@ mod tests {
         let d = det(&[(Lang::RU, &["привет"]), (DE, &["hallo"])]);
         // "hallo" typed on the Russian layout is "руддщ"-like; here we only check the dictionary route exists
         assert_eq!(pick(&d, "привет", RU, &[EN, GER]), None);
+    }
+
+    #[test]
+    fn two_letter_words_need_a_dictionary() {
+        // min length 2 (the default): "ye" typed on the English layout is "ну" - converted only thanks to the dictionary
+        let mut d = det(&[(Lang::EN, &["hello"]), (Lang::RU, &["ну"])]);
+        d.min_len = 2;
+        assert_eq!(pick(&d, "ye", EN, &[RU]), Some(2));
+        // without a dictionary the rules are not trusted for two letters: "tv", "pc", "ds" stay as typed
+        let mut none = det(&[]);
+        none.min_len = 2;
+        for w in ["tv", "pc", "ds"] {
+            assert_eq!(pick(&none, w, EN, &[RU]), None, "{w}");
+        }
     }
 
     #[test]

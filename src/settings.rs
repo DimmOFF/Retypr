@@ -14,7 +14,7 @@ use eframe::egui::{self, vec2, Align, Align2, Color32, FontId, Frame, Layout, Ma
 use std::{
     collections::HashMap,
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::SystemTime,
 };
@@ -403,8 +403,9 @@ fn set_lang_enabled(cfg: &mut Config, lang: Lang, on: bool) {
 /// path to store in the config (relative to the data folder when possible).
 fn import_sound(src: &Path) -> String {
     let Some(data) = Config::dir() else { return src.to_string_lossy().to_string() };
-    if src.starts_with(&data) {
-        return Config::relativize(src);
+    let rel = Config::relativize(src);
+    if !Path::new(&rel).is_absolute() {
+        return rel; // already inside the data folder
     }
     let sounds = data.join("sounds");
     if std::fs::create_dir_all(&sounds).is_err() {
@@ -426,22 +427,66 @@ fn import_sound(src: &Path) -> String {
     Config::relativize(&dest)
 }
 
-fn sound_item(ui: &mut egui::Ui, title: &str, path: &mut String, player: &Sounds, vol: f32) {
+/// What the user sees: the absolute path (relative config values are resolved against the data folder).
+fn display_path(stored: &str) -> String {
+    let s = stored.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    Config::resolve(s).components().collect::<PathBuf>().display().to_string()
+}
+
+/// What goes into config.toml: relative to the data folder when the file is inside it (keeps the folder
+/// portable), otherwise the absolute path as is.
+fn stored_path(shown: &str) -> String {
+    let s = shown.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    let p = Path::new(s);
+    if p.is_absolute() {
+        Config::relativize(p)
+    } else {
+        s.to_string()
+    }
+}
+
+/// One sound: `cfg_path` is the value stored in the config, `text` the absolute path shown in the edit box.
+fn sound_item(ui: &mut egui::Ui, title: &str, cfg_path: &mut String, text: &mut String, player: &Sounds, vol: f32) {
     ui.label(RichText::new(title).size(15.0));
     ui.horizontal(|ui| {
         let w = (ui.available_width() - 260.0).max(120.0);
-        ui.add(egui::TextEdit::singleline(path).desired_width(w).hint_text("No sound"));
+        if ui.add(egui::TextEdit::singleline(text).desired_width(w).hint_text("No sound")).changed() {
+            *cfg_path = stored_path(text);
+        }
         if ui.button("Browse…").clicked() {
-            if let Some(p) = rfd::FileDialog::new().add_filter("Audio", &["wav", "mp3", "ogg", "flac"]).pick_file() {
-                *path = import_sound(&p);
+            let mut dlg = rfd::FileDialog::new().add_filter("Audio", &["wav", "mp3", "ogg", "flac"]);
+            // open the dialog in the folder of the current sound (or in data/sounds when there is none)
+            if cfg_path.trim().is_empty() {
+                if let Some(d) = Config::dir() {
+                    dlg = dlg.set_directory(d.join("sounds"));
+                }
+            } else {
+                let cur = Config::resolve(cfg_path.trim());
+                if let Some(dir) = cur.parent().filter(|d| d.is_dir()) {
+                    dlg = dlg.set_directory(dir);
+                    if let Some(name) = cur.file_name() {
+                        dlg = dlg.set_file_name(name.to_string_lossy().to_string());
+                    }
+                }
+            }
+            if let Some(p) = dlg.pick_file() {
+                *cfg_path = import_sound(&p);
+                *text = display_path(cfg_path);
             }
         }
-        let has = !path.trim().is_empty();
+        let has = !cfg_path.trim().is_empty();
         if ui.add_enabled(has, egui::Button::new("Test")).clicked() {
-            player.play_file(&Config::resolve(path.trim()), vol);
+            player.play_file(&Config::resolve(cfg_path.trim()), vol);
         }
         if ui.add_enabled(has, egui::Button::new("Clear")).clicked() {
-            path.clear();
+            cfg_path.clear();
+            text.clear();
         }
     });
 }
@@ -559,6 +604,8 @@ struct App {
     downloads: Downloads,
     autostart: bool,
     player: Sounds,
+    /// the sound paths as shown in the Sounds page (absolute): manual, auto, selection, rule
+    sound_text: [String; 4],
     status: String,
     saved: String, // snapshot of the saved state, to detect unsaved changes
     styled: bool,
@@ -590,6 +637,12 @@ impl App {
             downloads: Arc::new(Mutex::new(HashMap::new())),
             autostart: autostart::is_enabled(),
             player,
+            sound_text: [
+                display_path(&cfg.sounds.on_manual_switch),
+                display_path(&cfg.sounds.on_auto_switch),
+                display_path(&cfg.sounds.on_selection_convert),
+                display_path(&cfg.sounds.on_rule_toggle),
+            ],
             status: String::new(),
             saved: String::new(),
             styled: false,
@@ -836,17 +889,19 @@ impl App {
         section(ui, "Events");
         let vol = self.cfg.sounds.volume;
         card(ui, pal, |ui| {
-            sound_item(ui, "Manual conversion of a word", &mut self.cfg.sounds.on_manual_switch, &self.player, vol);
+            let [t_manual, t_auto, t_selection, t_rule] = &mut self.sound_text;
+            let sounds = &mut self.cfg.sounds;
+            sound_item(ui, "Manual conversion of a word", &mut sounds.on_manual_switch, t_manual, &self.player, vol);
             divider(ui);
-            sound_item(ui, "Automatic correction", &mut self.cfg.sounds.on_auto_switch, &self.player, vol);
+            sound_item(ui, "Automatic correction", &mut sounds.on_auto_switch, t_auto, &self.player, vol);
             divider(ui);
-            sound_item(ui, "Conversion of selected text", &mut self.cfg.sounds.on_selection_convert, &self.player, vol);
+            sound_item(ui, "Conversion of selected text", &mut sounds.on_selection_convert, t_selection, &self.player, vol);
             divider(ui);
-            sound_item(ui, "Per-app rule toggled", &mut self.cfg.sounds.on_rule_toggle, &self.player, vol);
+            sound_item(ui, "Per-app rule toggled", &mut sounds.on_rule_toggle, t_rule, &self.player, vol);
         });
         ui.label(weak(
             ui,
-            "Files you pick are copied into the \"sounds\" folder next to Retypr.exe, so the program folder stays portable.",
+            "Paths are shown in full; inside the program folder they are stored relative to it. Files you pick elsewhere are copied into the \"sounds\" folder next to Retypr.exe, so the program folder stays portable.",
         ));
     }
 

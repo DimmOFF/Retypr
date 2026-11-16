@@ -54,6 +54,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/Retypr.exe "dist/$name/"
           Copy-Item README.md "dist/$name/"
+          New-Item -ItemType Directory -Force -Path "dist/$name/data/sounds" | Out-Null
+          Copy-Item assets/sounds/* "dist/$name/data/sounds/"
           Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
 
       - uses: actions/upload-artifact@v4
@@ -137,6 +139,8 @@ jobs:
           NAME="Retypr-$VERSION-linux-x86_64"
           mkdir -p "dist/$NAME"
           cp target/release/Retypr README.md "dist/$NAME/"
+          mkdir -p "dist/$NAME/data/sounds"
+          cp assets/sounds/* "dist/$NAME/data/sounds/"
           chmod +x "dist/$NAME/Retypr"
           tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
 

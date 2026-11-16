@@ -84,6 +84,7 @@ goto :end
 
 :copied
 copy /y README.md "%OUT%\" >nul 2>nul
+if exist "assets\sounds" xcopy /e /i /y /q "assets\sounds" "%OUT%\data\sounds\" >nul 2>nul
 
 echo.
 echo [OK] Built:  %SRC%

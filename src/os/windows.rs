@@ -31,7 +31,7 @@ use windows::{
                 INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, MAP_VIRTUAL_KEY_TYPE, VIRTUAL_KEY,
             },
             WindowsAndMessaging::{
-                CallNextHookEx, DispatchMessageW, EnumWindows, GetForegroundWindow, GetMessageW, GetWindowTextW, IsIconic,
+                CallNextHookEx, DispatchMessageW, EnumWindows, GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GUITHREADINFO, GetWindowTextW, IsIconic,
                 GetWindowThreadProcessId, MessageBoxW, PostMessageW, PostQuitMessage, SetTimer, SetWindowsHookExW,
                 TranslateMessage, MB_ICONERROR, MB_ICONWARNING, MB_OK,
                 HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WH_MOUSE_LL,
@@ -156,7 +156,7 @@ unsafe fn on_key(wparam: WPARAM, lparam: LPARAM) -> bool {
         0x09 | 0x0D | 0x1B | 0x21..=0x28 | 0x2D | 0x2E => K::Reset,
         _ => K::Char,
     };
-    let text = if down && key == K::Char { translate(kb.vkCode, kb.scanCode, fg) } else { String::new() };
+    let text = if down && key == K::Char { translate(kb.vkCode, kb.scanCode) } else { String::new() };
     h(KeyEvent { down, key, text, name: vk_name(kb.vkCode) })
 }
 
@@ -193,8 +193,8 @@ fn vk_name(vk: u32) -> &'static str {
 }
 
 /// vk -> the character in the focused window's current layout (without side effects on dead keys).
-unsafe fn translate(vk: u32, scan: u32, fg: HWND) -> String {
-    let tid = GetWindowThreadProcessId(fg, None);
+unsafe fn translate(vk: u32, scan: u32) -> String {
+    let (_, tid, _) = input_target();
     let hkl = GetKeyboardLayout(tid);
 
     let mut st = [0u8; 256];
@@ -242,10 +242,22 @@ fn hkl(id: LayoutId) -> HKL {
 }
 
 /// Layout of the focused window.
+/// (foreground window, thread that owns the keyboard focus, window that has the focus).
+/// The focus window can belong to another thread than the top-level window (terminals, some browsers), and the
+/// keyboard layout is per thread, so layouts must be read from - and switched for - the FOCUS thread.
+unsafe fn input_target() -> (HWND, u32, HWND) {
+    let fg = GetForegroundWindow();
+    let fg_tid = GetWindowThreadProcessId(fg, None);
+    let mut gi = GUITHREADINFO { cbSize: std::mem::size_of::<GUITHREADINFO>() as u32, ..Default::default() };
+    let _ = GetGUIThreadInfo(fg_tid, &mut gi);
+    let focus = if gi.hwndFocus.0.is_null() { fg } else { gi.hwndFocus };
+    let tid = if focus == fg { fg_tid } else { GetWindowThreadProcessId(focus, None) };
+    (fg, tid, focus)
+}
+
 pub fn current_layout() -> LayoutId {
     unsafe {
-        let fg = GetForegroundWindow();
-        let tid = GetWindowThreadProcessId(fg, None);
+        let (_, tid, _) = input_target();
         GetKeyboardLayout(tid).0 as isize
     }
 }
@@ -327,12 +339,45 @@ fn convert_char(c: char, hf: HKL, ht: HKL) -> char {
 }
 
 /// Switch the focused window to a specific layout.
-pub fn switch_to(id: LayoutId) -> Result<()> {
+fn post_layout_request(hwnd: HWND, id: LayoutId) -> Result<()> {
     unsafe {
-        let hwnd = GetForegroundWindow();
         PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, WPARAM(0), LPARAM(id))?;
     }
     Ok(())
+}
+
+/// Ask the focused window (and its top-level window) to switch to layout `id`. Asynchronous: the target thread
+/// handles the request a moment later.
+pub fn switch_to(id: LayoutId) -> Result<()> {
+    let (fg, focus) = unsafe {
+        let (fg, _, focus) = input_target();
+        (fg, focus)
+    };
+    let first = post_layout_request(fg, id);
+    if focus != fg {
+        let _ = post_layout_request(focus, id);
+    }
+    first
+}
+
+/// Verify (in the background, without delaying anything) that the layout really changed and repeat the request
+/// if not: some apps are slow, or ignore the first request.
+fn ensure_layout_later(id: LayoutId) {
+    std::thread::spawn(move || {
+        for attempt in 0..3 {
+            for _ in 0..6 {
+                if current_layout() == id {
+                    return;
+                }
+                sleep(Duration::from_millis(15));
+            }
+            log::debug!("layout request #{attempt} is not applied yet, repeating it");
+            let _ = switch_to(id);
+        }
+        if current_layout() != id {
+            log::warn!("the layout did not switch to {id:#x}");
+        }
+    });
 }
 
 // ───────────────────────── input ─────────────────────────
@@ -372,6 +417,12 @@ fn send(inputs: &[INPUT]) {
 
 /// Erase `erase` characters, type `text` (Unicode, independent of the layout), switch the layout.
 pub fn replace_typed(erase: usize, text: &str, to: LayoutId) -> Result<()> {
+    // Switch the layout FIRST. The text below is typed as Unicode, so it does not depend on the layout, but
+    // whatever the user types next must already be in the target layout. Doing it last left a window in which
+    // fast typing went out in the old layout.
+    if let Err(e) = switch_to(to) {
+        log::warn!("layout switch request failed: {e:#}");
+    }
     let mut v = Vec::with_capacity(erase * 2 + text.len() * 2);
     for _ in 0..erase {
         v.push(vk(VK_BACK, false));
@@ -382,7 +433,8 @@ pub fn replace_typed(erase: usize, text: &str, to: LayoutId) -> Result<()> {
         v.push(uni(u, true));
     }
     send(&v);
-    switch_to(to)
+    ensure_layout_later(to);
+    Ok(())
 }
 
 /// Selection conversion: copy the selection, hand it to `f`, paste the result,
@@ -416,9 +468,12 @@ where
         let cur = current_layout();
         if let Some((conv, target)) = f(&sel, cur) {
             cb.set_text(conv.clone())?;
+            if let Err(e) = switch_to(target) {
+                log::warn!("layout switch request failed: {e:#}");
+            }
             send(&[vk(VK_CONTROL, false), vk(VK_V, false), vk(VK_V, true), vk(VK_CONTROL, true)]);
             sleep(Duration::from_millis(200)); // give the app time to read the clipboard
-            switch_to(target)?;
+            ensure_layout_later(target);
 
             // caret position / keep or drop the selection (see os::caret_plan)
             let n = conv.replace("\r\n", "\n").chars().count();

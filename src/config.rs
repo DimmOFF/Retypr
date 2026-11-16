@@ -15,8 +15,8 @@ use std::{
 
 use crate::lang::Lang;
 
-const MANUAL_SWITCH_MP3: &[u8] = include_bytes!("../assets/sounds/manual-switch.mp3");
-const AUTO_CORRECTION_MP3: &[u8] = include_bytes!("../assets/sounds/automatic-correction.mp3");
+/// The default sound files are NOT embedded in the exe: they ship next to it (see `seed_dirs`).
+const DEFAULT_SOUND_FILES: [&str; 2] = ["manual-switch.mp3", "automatic-correction.mp3"];
 
 pub const DEFAULT_SOUND_MANUAL: &str = "sounds/manual-switch.mp3";
 pub const DEFAULT_SOUND_AUTO: &str = "sounds/automatic-correction.mp3";
@@ -111,7 +111,7 @@ impl Default for Config {
             deselect_after_convert: false,
             caret_after_convert: CaretSide::Right,
             theme: "system".into(),
-            min_word_len: 3,
+            min_word_len: 2,
             disabled_languages: vec![],
             auto_exclude_apps: [
                 "code.exe", "devenv.exe", "idea64.exe", "pycharm64.exe", "clion64.exe",
@@ -172,10 +172,21 @@ fn resolve_against(base: &Path, p: &Path) -> PathBuf {
 
 /// A path relative to `base` (with '/' separators) when `abs` lives inside it, otherwise `abs` as is.
 fn relativize_against(base: &Path, abs: &Path) -> String {
-    match abs.strip_prefix(base) {
-        Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
-        Err(_) => abs.to_string_lossy().to_string(),
+    if let Ok(rel) = abs.strip_prefix(base) {
+        return rel.to_string_lossy().replace('\\', "/");
     }
+    if cfg!(windows) {
+        // Windows paths are case-insensitive: "e:\dev\Retypr" and "E:\DEV\retypr" are the same folder
+        let norm = |p: &Path| p.to_string_lossy().replace('\\', "/");
+        let b = norm(base).trim_end_matches('/').to_string();
+        let a = norm(abs);
+        if let Some(head) = a.get(..b.len()) {
+            if head.eq_ignore_ascii_case(&b) && a.as_bytes().get(b.len()) == Some(&b'/') {
+                return a[b.len() + 1..].to_string();
+            }
+        }
+    }
+    abs.to_string_lossy().to_string()
 }
 
 impl Config {
@@ -252,18 +263,41 @@ impl Config {
     }
 }
 
-/// Write the bundled default sounds into <data>/sounds if they are missing.
-fn ensure_default_sounds(data_dir: &Path) {
-    let dir = data_dir.join("sounds");
-    if std::fs::create_dir_all(&dir).is_err() {
+/// Where the default sound files may be shipped, in order of preference.
+fn seed_dirs() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Some(exe) = exe_dir() {
+        v.push(exe.join("data").join("sounds")); // release zip / portable layout: <exe folder>/data/sounds
+        v.push(exe.join("sounds"));
+        v.push(exe.join("..").join("Resources").join("sounds")); // macOS: Retypr.app/Contents/Resources/sounds
+    }
+    // running a debug build straight from the source tree
+    #[cfg(debug_assertions)]
+    v.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join("sounds"));
+    v
+}
+
+/// Copy the default sounds that are missing from <data>/sounds out of the first folder (of `seeds`) that has them.
+/// In portable mode they already sit in <data>/sounds and nothing happens; when the data folder is elsewhere
+/// (per-user folder, macOS), this seeds it on first run. Without any seed folder there is simply no sound.
+fn copy_missing_sounds(seeds: &[PathBuf], data_dir: &Path) {
+    let dest_dir = data_dir.join("sounds");
+    if std::fs::create_dir_all(&dest_dir).is_err() {
         return;
     }
-    for (name, bytes) in [("manual-switch.mp3", MANUAL_SWITCH_MP3), ("automatic-correction.mp3", AUTO_CORRECTION_MP3)] {
-        let p = dir.join(name);
-        if !p.exists() {
-            let _ = std::fs::write(p, bytes);
+    for name in DEFAULT_SOUND_FILES {
+        let dest = dest_dir.join(name);
+        if dest.exists() {
+            continue;
+        }
+        if let Some(src) = seeds.iter().map(|d| d.join(name)).find(|p| p.is_file()) {
+            let _ = std::fs::copy(src, dest);
         }
     }
+}
+
+fn ensure_default_sounds(data_dir: &Path) {
+    copy_missing_sounds(&seed_dirs(), data_dir);
 }
 
 #[cfg(test)]
@@ -287,8 +321,21 @@ mod tests {
     }
 
     #[test]
+    fn relativize_ignores_case_on_windows() {
+        if cfg!(windows) {
+            let base = Path::new("C:\\Apps\\Retypr\\data");
+            let abs = Path::new("c:\\apps\\retypr\\DATA\\sounds\\a.mp3");
+            assert_eq!(relativize_against(base, abs), "sounds/a.mp3");
+            // a sibling folder with the same prefix is NOT inside the data folder
+            let other = Path::new("C:\\Apps\\Retypr\\data2\\a.mp3");
+            assert_eq!(relativize_against(base, other), other.to_string_lossy());
+        }
+    }
+
+    #[test]
     fn defaults() {
         let c = Config::default();
+        assert_eq!(c.min_word_len, 2);
         assert!((c.sounds.volume - 0.3).abs() < 1e-6);
         assert_eq!(c.sounds.on_manual_switch, "sounds/manual-switch.mp3");
         assert_eq!(c.sounds.on_auto_switch, "sounds/automatic-correction.mp3");
@@ -328,6 +375,26 @@ mod tests {
         let c: Config = toml::from_str("[sounds]\non_auto_switch = \"\"\n").unwrap();
         assert_eq!(c.sounds.on_auto_switch, "");
         assert_eq!(c.sounds.on_manual_switch, "sounds/manual-switch.mp3");
+    }
+
+    #[test]
+    fn default_sounds_are_seeded_from_shipped_files_and_never_overwritten() {
+        let base = std::env::temp_dir().join(format!("retypr-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (seed, data) = (base.join("seed"), base.join("data"));
+        std::fs::create_dir_all(&seed).unwrap();
+        std::fs::write(seed.join("manual-switch.mp3"), b"SEED-MANUAL").unwrap();
+        // automatic-correction.mp3 is not shipped in this seed folder
+
+        copy_missing_sounds(&[base.join("missing"), seed.clone()], &data);
+        assert_eq!(std::fs::read(data.join("sounds/manual-switch.mp3")).unwrap(), b"SEED-MANUAL");
+        assert!(!data.join("sounds/automatic-correction.mp3").exists()); // no seed: simply no sound
+
+        // the user replaced a file: it must survive the next start
+        std::fs::write(data.join("sounds/manual-switch.mp3"), b"USER").unwrap();
+        copy_missing_sounds(&[seed], &data);
+        assert_eq!(std::fs::read(data.join("sounds/manual-switch.mp3")).unwrap(), b"USER");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

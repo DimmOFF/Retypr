@@ -20,6 +20,7 @@ QUIT
 CONFIG
   ~/Library/Application Support/retypr/config.toml
   (inside an app bundle the portable "data" folder is not used; see the project README.)
+  The default sounds are copied from the app bundle into "sounds" next to config.toml on first run.
   Dictionaries for better automatic detection are downloaded from Retypr's Settings window
   on Windows; on macOS put <language>.txt word lists into the "dict" folder next to config.toml.
 

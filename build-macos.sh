@@ -87,6 +87,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$UNIVERSAL" "$APP/Contents/MacOS/$BIN_NAME"
 chmod +x "$APP/Contents/MacOS/$BIN_NAME"
 
+# default sounds ship inside the bundle; Retypr copies them to its data folder on first run
+if [ -d assets/sounds ]; then
+  mkdir -p "$APP/Contents/Resources/sounds"
+  cp assets/sounds/* "$APP/Contents/Resources/sounds/"
+fi
+
 # icon: assets/retypr-1024.png -> AppIcon.icns (python3 tools/make_icon.py regenerates the PNG)
 ICON_SRC="assets/retypr-1024.png"
 if [ -f "$ICON_SRC" ]; then

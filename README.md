@@ -21,7 +21,7 @@ automatically or with hotkeys. Written in Rust.
 
 * **Per-application rules** - keep auto-switching off in IDEs and terminals, or switch Retypr off completely in games.
 * **Dictionaries** - download word lists per language in *Settings > Dictionaries*, enable or disable each one.
-* **Sounds** - a sound for manual conversion, automatic correction and selection conversion (defaults included).
+* **Sounds** - a sound for manual conversion, automatic correction and selection conversion (default sounds are shipped in `data/sounds`).
 * **Tray icon** that shows the state at a glance (see below) and a modern settings window.
 * **Portable** - settings live next to `Retypr.exe`.
 
@@ -54,14 +54,16 @@ Everything Retypr stores lives in a `data` folder **next to `Retypr.exe`**:
 ```
 Retypr.exe
 data/
-  config.toml
+  config.toml  created on first run
   dict/        word lists (en.txt, ru.txt, ...) and exceptions.txt
-  sounds/      sound files
+  sounds/      sound files (the release zip ships the default ones here)
 ```
 
 * Move or copy the whole program folder anywhere - nothing breaks. Paths in `config.toml` may be **relative**; they
   are resolved against the `data` folder. Sound files you pick in the settings are copied into `data/sounds`
   so they stay portable.
+  The default sounds are ordinary files, not part of the exe: replace `data/sounds/manual-switch.mp3` and
+  `automatic-correction.mp3` to change them, or delete them for silence. If they are missing, Retypr just plays nothing.
 * *Start with Windows* repoints itself to the new location the next time Retypr starts.
 * If the program folder is not writable (for example *Program Files*), Retypr falls back to
   `%APPDATA%\retypr\config`. Set the `RETYPR_DATA_DIR` environment variable to force a folder.
@@ -116,7 +118,7 @@ dictionaries automatically. Not every language has a list available.
 | Key | Meaning |
 |---|---|
 | `auto_switch` | Automatic correction on/off. |
-| `min_word_len` | Words shorter than this are never corrected automatically. |
+| `min_word_len` | Words shorter than this are never corrected automatically (default 2; two-letter words are converted only when a dictionary confirms it). |
 | `disabled_languages` | Language codes (`"de"`, `"ru"`...) excluded from auto-switching. Empty = all installed layouts take part. |
 | `auto_exclude_apps`, `disabled_apps` | Per-application rules (see above). |
 | `deselect_after_convert` | `true`: remove the selection after converting selected text. Default `false`: keep it, so the hotkey can be pressed again to cycle layouts. |
