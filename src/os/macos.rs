@@ -40,7 +40,7 @@ use std::{
 use tao::{
     event::{Event, StartCause},
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
-    platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS},
+    platform::macos::{ActivationPolicy, EventLoopExtMacOS},
 };
 
 // ───────────────────────── system APIs ─────────────────────────
@@ -81,7 +81,7 @@ extern "C" {
     fn CGEventSourceGetKeyboardType(source: *const c_void) -> u32;
 }
 
-#[link(name = "proc")]
+// proc_pidpath is part of libSystem, which every program links already
 extern "C" {
     fn proc_pidpath(pid: i32, buffer: *mut c_void, buffersize: u32) -> i32;
 }
@@ -688,9 +688,8 @@ where
     install_event_tap()?;
     start_app_poller();
 
-    let mut builder = EventLoopBuilder::<()>::with_user_event();
-    builder.with_activation_policy(ActivationPolicy::Accessory); // no Dock icon
-    let event_loop = builder.build();
+    let mut event_loop = EventLoopBuilder::<()>::with_user_event().build();
+    event_loop.set_activation_policy(ActivationPolicy::Accessory); // menu bar app: no Dock icon
     let _ = PROXY.set(Mutex::new(event_loop.create_proxy()));
 
     let mut init = Some(init);

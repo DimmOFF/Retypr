@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.1
+* macOS: fix the build against `tao 0.30` (the activation policy is set on the event loop, not on its builder).
+
 ## 0.2.0
 
 ### macOS (new)
