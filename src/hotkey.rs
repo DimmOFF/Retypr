@@ -119,9 +119,9 @@ impl Hotkey {
         for m in mods {
             match m.to_lowercase().as_str() {
                 "ctrl" | "control" => h.ctrl = true,
-                "alt" => h.alt = true,
+                "alt" | "option" | "opt" => h.alt = true,
                 "shift" => h.shift = true,
-                "win" | "meta" | "cmd" | "super" => h.meta = true,
+                "win" | "meta" | "cmd" | "command" | "super" => h.meta = true,
                 other => return Err(format!("unknown modifier \"{other}\"")),
             }
         }
@@ -211,12 +211,25 @@ mod tests {
 
     #[test]
     fn defaults_are_valid_and_distinct() {
-        let (b, warns) = Bindings::from_config(&HotkeysConfig::default());
+        // the defaults differ per OS (Pause-based on Windows/Linux, Ctrl+Alt+letter on macOS)
+        let d = HotkeysConfig::default();
+        let (b, warns) = Bindings::from_config(&d);
         assert!(warns.is_empty(), "{warns:?}");
-        assert_eq!(b.find("pause", false, false, false, false), Some(Action::Word));
-        assert_eq!(b.find("pause", false, false, true, false), Some(Action::Selection));
-        assert_eq!(b.find("pause", false, true, false, false), Some(Action::ToggleAuto));
-        assert_eq!(b.find("pause", false, true, true, false), Some(Action::ToggleApp));
+        for (text, action) in [
+            (&d.convert_word, Action::Word),
+            (&d.convert_selection, Action::Selection),
+            (&d.toggle_auto, Action::ToggleAuto),
+            (&d.toggle_app_auto, Action::ToggleApp),
+        ] {
+            let h = Hotkey::parse(text).unwrap();
+            assert_eq!(b.find(h.key, h.ctrl, h.alt, h.shift, h.meta), Some(action), "{text}");
+        }
+    }
+
+    #[test]
+    fn mac_style_modifier_names() {
+        let h = Hotkey::parse("Ctrl+Option+Command+Z").unwrap();
+        assert!(h.ctrl && h.alt && h.meta && !h.shift && h.key == "z");
     }
 
     #[test]
@@ -225,6 +238,7 @@ mod tests {
         c.convert_word = "Nope".into();
         let (b, warns) = Bindings::from_config(&c);
         assert_eq!(warns.len(), 1);
-        assert_eq!(b.find("pause", false, false, false, false), Some(Action::Word));
+        let d = Hotkey::parse(&HotkeysConfig::default().convert_word).unwrap();
+        assert_eq!(b.find(d.key, d.ctrl, d.alt, d.shift, d.meta), Some(Action::Word));
     }
 }

@@ -60,6 +60,7 @@ fn palette(dark: bool) -> Pal {
     }
 }
 
+#[cfg(windows)]
 fn setup_fonts(ctx: &egui::Context) {
     // Segoe UI gives the native Windows look (and covers Cyrillic and many other scripts).
     let mut fonts = egui::FontDefinitions::default();
@@ -70,6 +71,26 @@ fn setup_fonts(ctx: &egui::Context) {
         }
     }
     ctx.set_fonts(fonts);
+}
+
+/// macOS: egui's built-in fonts already cover Latin, Cyrillic and Greek.
+#[cfg(not(windows))]
+fn setup_fonts(_ctx: &egui::Context) {}
+
+/// OS-specific wording.
+#[cfg(windows)]
+mod os_text {
+    pub const START_LABEL: &str = "Start with Windows";
+    pub const SYSTEM: &str = "Windows";
+    pub const ALT: &str = "Alt";
+    pub const META: &str = "Win";
+}
+#[cfg(target_os = "macos")]
+mod os_text {
+    pub const START_LABEL: &str = "Start at login";
+    pub const SYSTEM: &str = "macOS";
+    pub const ALT: &str = "Option";
+    pub const META: &str = "Cmd";
 }
 
 fn apply_style(ctx: &egui::Context, dark: bool) -> Pal {
@@ -271,13 +292,18 @@ fn draw_logo(ui: &mut egui::Ui, size: f32) {
     }
 }
 
+/// The OS command that opens a file, folder or URL with its default application.
+fn opener() -> &'static str {
+    if cfg!(target_os = "macos") { "open" } else { "explorer" }
+}
+
 fn open_url(url: &str) {
-    let _ = std::process::Command::new("explorer").arg(url).spawn();
+    let _ = std::process::Command::new(opener()).arg(url).spawn();
 }
 
 fn open_folder(path: &Path) {
     let _ = std::fs::create_dir_all(path);
-    let _ = std::process::Command::new("explorer").arg(path).spawn();
+    let _ = std::process::Command::new(opener()).arg(path).spawn();
 }
 
 // ───────────────────────────── dictionaries ─────────────────────────────
@@ -594,7 +620,7 @@ struct App {
     saved_cfg: Config,
     tab: Tab,
     hk: [Hotkey; 4],
-    /// languages of the layouts installed in Windows
+    /// languages of the keyboard layouts installed in the system
     installed: Vec<Lang>,
     all_keys: Vec<&'static str>,
     new_auto_app: String,
@@ -749,6 +775,21 @@ impl App {
         self.status = "Changes discarded.".into();
     }
 
+    /// macOS: the menu bar process asks us to come to the front / to close through small files in the data folder.
+    #[cfg(target_os = "macos")]
+    fn handle_requests(&mut self, ctx: &egui::Context) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(400)); // keep polling while idle
+        let Some(dir) = Config::dir() else { return };
+        let take = |name: &str| std::fs::remove_file(dir.join(name)).is_ok();
+        if take(".settings-raise") {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        if take(".settings-close") {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
     // ───────────── pages ─────────────
 
     fn page_general(&mut self, ui: &mut egui::Ui, pal: &Pal) {
@@ -791,10 +832,23 @@ impl App {
                     }
                 },
             );
+            divider(ui);
+            row(
+                ui,
+                "Restore selection and caret up to",
+                "Putting the selection or caret back costs one keystroke per character, so very long texts are skipped (the caret stays at the right end). 0 = no limit.",
+                |ui| {
+                    ui.add(
+                        egui::Slider::new(&mut self.cfg.selection_restore_limit, 0..=20000)
+                            .logarithmic(true)
+                            .suffix(" chars"),
+                    );
+                },
+            );
         });
         section(ui, "System");
         card(ui, pal, |ui| {
-            row(ui, "Start with Windows", "Applies immediately.", |ui| {
+            row(ui, os_text::START_LABEL, "Applies immediately.", |ui| {
                 if toggle(ui, &mut self.autostart).changed() {
                     if let Err(e) = autostart::set(self.autostart) {
                         self.status = format!("Autostart: {e}");
@@ -822,9 +876,9 @@ impl App {
                 ui.horizontal(|ui| {
                     let hk = &mut self.hk[i];
                     chip(ui, pal, "Ctrl", &mut hk.ctrl);
-                    chip(ui, pal, "Alt", &mut hk.alt);
+                    chip(ui, pal, os_text::ALT, &mut hk.alt);
                     chip(ui, pal, "Shift", &mut hk.shift);
-                    chip(ui, pal, "Win", &mut hk.meta);
+                    chip(ui, pal, os_text::META, &mut hk.meta);
                     ui.label("+");
                     egui::ComboBox::from_id_salt(i)
                         .width(130.0)
@@ -909,7 +963,7 @@ impl App {
         page_header(
             ui,
             "Dictionaries",
-            "Auto-switching works with the keyboard layouts installed in Windows. A word list per language lets Retypr tell a typo from a wrong layout.",
+            &format!("Auto-switching works with the keyboard layouts installed in {}. A word list per language lets Retypr tell a typo from a wrong layout.", os_text::SYSTEM),
         );
 
         let langs = self.installed.clone();
@@ -1074,6 +1128,8 @@ impl eframe::App for App {
             self.restyle(ctx);
             self.styled = true;
         }
+        #[cfg(target_os = "macos")]
+        self.handle_requests(ctx);
         let pal = self.pal;
         let conflicts = self.conflicts();
         let dirty = self.snapshot() != self.saved;

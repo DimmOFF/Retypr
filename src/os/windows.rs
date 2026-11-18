@@ -4,13 +4,14 @@ use crate::hotkey::{DIGITS, FKEYS, LETTERS};
 use crate::lang::Lang;
 use anyhow::{anyhow, Result};
 use std::{
+    collections::HashMap,
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         atomic::{AtomicIsize, Ordering},
         Mutex, OnceLock,
     },
     thread::sleep,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use windows::{
     core::{w, HSTRING, PCWSTR, PWSTR},
@@ -215,11 +216,14 @@ unsafe fn translate(vk: u32, scan: u32) -> String {
 }
 
 /// Installs the hooks and runs the message loop. Blocks the thread.
-pub fn run<F>(handler: F) -> Result<()>
+pub fn run<F, I>(handler: F, init: I, tick: fn(), on_exit: fn()) -> Result<()>
 where
     F: Fn(KeyEvent) -> bool + Send + Sync + 'static,
+    I: FnOnce() -> Result<()>,
 {
     HANDLER.set(Box::new(handler)).map_err(|_| anyhow!("hook already installed"))?;
+    init()?; // the tray icon is created in this (main) thread, before the message loop starts
+    every(150, tick);
     unsafe {
         let m = GetModuleHandleW(PCWSTR::null())?;
         let inst = HINSTANCE(m.0);
@@ -232,6 +236,7 @@ where
             DispatchMessageW(&msg);
         }
     }
+    on_exit();
     Ok(())
 }
 
@@ -305,7 +310,10 @@ pub fn convert(text: &str, from: LayoutId, to: LayoutId) -> String {
         return text.to_string();
     }
     let (hf, ht) = (hkl(from), hkl(to));
-    text.chars().map(|c| convert_char(c, hf, ht)).collect()
+    // A long text has only a few dozen DISTINCT characters, but converting one costs three WinAPI calls:
+    // remember the results.
+    let mut cache: HashMap<char, char> = HashMap::new();
+    text.chars().map(|c| *cache.entry(c).or_insert_with(|| convert_char(c, hf, ht))).collect()
 }
 
 fn convert_char(c: char, hf: HKL, ht: HKL) -> char {
@@ -406,13 +414,17 @@ fn uni(unit: u16, up: bool) -> INPUT {
     ki(0, unit, 0x0004 | if up { 0x0002 } else { 0 }) // KEYEVENTF_UNICODE
 }
 
-fn send(inputs: &[INPUT]) {
-    for chunk in inputs.chunks(120) {
+fn send_chunked(inputs: &[INPUT], chunk: usize, pause_ms: u64) {
+    for part in inputs.chunks(chunk) {
         unsafe {
-            SendInput(chunk, std::mem::size_of::<INPUT>() as i32);
+            SendInput(part, std::mem::size_of::<INPUT>() as i32);
         }
-        sleep(Duration::from_millis(2));
+        sleep(Duration::from_millis(pause_ms));
     }
+}
+
+fn send(inputs: &[INPUT]) {
+    send_chunked(inputs, 120, 2);
 }
 
 /// Erase `erase` characters, type `text` (Unicode, independent of the layout), switch the layout.
@@ -453,30 +465,36 @@ where
 
     send(&[vk(VK_CONTROL, false), vk(VK_C, false), vk(VK_C, true), vk(VK_CONTROL, true)]);
 
+    // Wait for the copy. A normal selection is on the clipboard within a few ms, so poll quickly at first and
+    // then more slowly; a huge selection can take a while to render (up to 3 s are allowed).
     let mut sel = String::new();
-    for _ in 0..10 {
-        sleep(Duration::from_millis(50));
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(3) {
         if let Ok(t) = cb.get_text() {
             if !t.is_empty() {
                 sel = t;
                 break;
             }
         }
+        let fast = started.elapsed() < Duration::from_millis(150);
+        sleep(Duration::from_millis(if fast { 4 } else { 20 }));
     }
 
+    // How long the app may need to read the pasted text from the clipboard before we may restore the old one.
+    let mut restore_after_ms = 0u64;
     if !sel.is_empty() {
         let cur = current_layout();
         if let Some((conv, target)) = f(&sel, cur) {
-            cb.set_text(conv.clone())?;
+            let n = conv.replace("\r\n", "\n").chars().count();
+            cb.set_text(conv)?;
             if let Err(e) = switch_to(target) {
                 log::warn!("layout switch request failed: {e:#}");
             }
             send(&[vk(VK_CONTROL, false), vk(VK_V, false), vk(VK_V, true), vk(VK_CONTROL, true)]);
-            sleep(Duration::from_millis(200)); // give the app time to read the clipboard
             ensure_layout_later(target);
 
-            // caret position / keep or drop the selection (see os::caret_plan)
-            let n = conv.replace("\r\n", "\n").chars().count();
+            // Caret position / keep or drop the selection (see os::caret_plan). These keys wait in the same input
+            // queue right behind Ctrl+V, so the app handles them after the paste - no need to sleep first.
             let mut v = Vec::new();
             for step in caret_plan(after, n) {
                 match step {
@@ -493,12 +511,27 @@ where
                 }
             }
             if !v.is_empty() {
-                send(&v);
+                send_chunked(&v, 1000, 1);
+            } else if after.max_chars > 0 && n > after.max_chars {
+                log::debug!("{n} characters: selection/caret fix-up skipped (limit {})", after.max_chars);
             }
+            restore_after_ms = (400 + n as u64 / 20).min(3000);
         }
     }
+
+    // Put the user's clipboard back. After a paste this happens in the background: the app needs a moment
+    // (longer for big texts) to read what we pasted, and nothing else has to wait for it.
     if let Some(s) = saved {
-        cb.set_text(s)?;
+        if restore_after_ms == 0 {
+            cb.set_text(s)?;
+        } else {
+            std::thread::spawn(move || {
+                sleep(Duration::from_millis(restore_after_ms));
+                if let Ok(mut c) = arboard::Clipboard::new() {
+                    let _ = c.set_text(s);
+                }
+            });
+        }
     }
     Ok(())
 }

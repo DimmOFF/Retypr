@@ -2,22 +2,23 @@
 // For debugging with logs use `build.cmd debug`.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod autostart;
 mod config;
 mod detector;
 mod engine;
 mod hotkey;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod icon;
 mod lang;
 mod layout_map;
+mod macplat;
 mod os;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod settings;
 mod sound;
 mod state;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod tray;
 
 use std::{
@@ -34,11 +35,26 @@ fn main() {
     }
 }
 
+/// Called ~7 times a second in the main thread: lets the tray follow the state.
+fn tick() {
+    #[cfg(any(windows, target_os = "macos"))]
+    tray::tick();
+}
+
+/// The program is exiting: close the settings window and remove the tray icon.
+fn on_exit() {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        tray::close_settings();
+        tray::shutdown();
+    }
+}
+
 fn run() -> anyhow::Result<()> {
     env_logger::init();
 
-    // `Retypr.exe --settings` opens the settings window (a separate process, no hooks)
-    #[cfg(windows)]
+    // `Retypr --settings` opens the settings window (a separate process, no keyboard hook)
+    #[cfg(any(windows, target_os = "macos"))]
     {
         if std::env::args().any(|a| a == "--settings") {
             return settings::run();
@@ -68,8 +84,8 @@ fn run() -> anyhow::Result<()> {
     let cfg = config::Config::load_or_create()?;
     state::init(&cfg);
 
-    // the program folder may have been moved: keep "Start with Windows" pointing at this copy
-    #[cfg(windows)]
+    // the program folder may have been moved: keep "start at login" pointing at this copy
+    #[cfg(any(windows, target_os = "macos"))]
     autostart::refresh_if_enabled();
 
     let (keys, warns) = hotkey::Bindings::from_config(&cfg.hotkeys);
@@ -77,31 +93,36 @@ fn run() -> anyhow::Result<()> {
         os::warn(&format!("Problems in the [hotkeys] section of config.toml:\n\n{}", warns.join("\n")));
     }
 
-    #[cfg(windows)]
-    {
-        tray::init(&cfg.hotkeys.toggle_auto)?;
-        os::every(150, tray::tick);
-    }
-
     let hk = &cfg.hotkeys;
     println!(
-        "Retypr is running.  {} = word | {} = selection | {} = toggle auto | {} = toggle auto for app",
-        hk.convert_word, hk.convert_selection, hk.toggle_auto, hk.toggle_app_auto
+        "Retypr {} is running.  {} = word | {} = selection | {} = toggle auto | {} = toggle auto for app",
+        env!("CARGO_PKG_VERSION"),
+        hk.convert_word,
+        hk.convert_selection,
+        hk.toggle_auto,
+        hk.toggle_app_auto
     );
     println!("Data folder: {:?}", config::Config::dir());
+
+    // The tray / menu bar icon is created by the OS layer at the right moment (inside the main loop).
+    let toggle_hint = cfg.hotkeys.toggle_auto.clone();
+    let init_ui = move || -> anyhow::Result<()> {
+        #[cfg(any(windows, target_os = "macos"))]
+        tray::init(&toggle_hint)?;
+        let _ = &toggle_hint;
+        Ok(())
+    };
 
     let engine = Arc::new(Mutex::new(engine::Engine::new(cfg, keys)));
     watch_config(engine.clone());
 
     let hook_engine = engine.clone();
-    let res = os::run(move |ev| hook_engine.lock().unwrap_or_else(|p| p.into_inner()).handle(&ev));
-
-    // we are exiting (tray -> Exit, or restarting as administrator): close the settings window too
-    #[cfg(windows)]
-    {
-        os::close_window(tray::SETTINGS_TITLE);
-        tray::shutdown();
-    }
+    let res = os::run(
+        move |ev| hook_engine.lock().unwrap_or_else(|p| p.into_inner()).handle(&ev),
+        init_ui,
+        tick,
+        on_exit,
+    );
     drop(inst);
     res
 }

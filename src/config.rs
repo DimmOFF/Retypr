@@ -43,13 +43,40 @@ pub struct HotkeysConfig {
 
 impl Default for HotkeysConfig {
     fn default() -> Self {
-        Self {
-            convert_word: "Pause".into(),
-            convert_selection: "Shift+Pause".into(),
-            toggle_auto: "Alt+Pause".into(),
-            toggle_app_auto: "Alt+Shift+Pause".into(),
+        if cfg!(target_os = "macos") {
+            // Mac keyboards have no Pause key. On macOS "Alt" is Option and "Win" is Command.
+            Self {
+                convert_word: "Ctrl+Alt+Z".into(),
+                convert_selection: "Ctrl+Alt+Shift+Z".into(),
+                toggle_auto: "Ctrl+Alt+A".into(),
+                toggle_app_auto: "Ctrl+Alt+Shift+A".into(),
+            }
+        } else {
+            Self {
+                convert_word: "Pause".into(),
+                convert_selection: "Shift+Pause".into(),
+                toggle_auto: "Alt+Pause".into(),
+                toggle_app_auto: "Alt+Shift+Pause".into(),
+            }
         }
     }
+}
+
+/// Apps (executable names, lowercase) where auto-switching is off by default: editors, IDEs, terminals.
+fn default_auto_exclude_apps() -> Vec<String> {
+    let list: &[&str] = if cfg!(target_os = "macos") {
+        &[
+            "electron", "code", "xcode", "idea", "pycharm", "clion", "webstorm", "rustrover", "goland",
+            "terminal", "iterm2", "ghostty", "alacritty", "wezterm-gui", "kitty", "warp",
+        ]
+    } else {
+        &[
+            "code.exe", "devenv.exe", "idea64.exe", "pycharm64.exe", "clion64.exe", "rustrover64.exe",
+            "webstorm64.exe", "windowsterminal.exe", "wt.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+            "putty.exe", "mintty.exe",
+        ]
+    };
+    list.iter().map(|s| s.to_string()).collect()
 }
 
 /// Sound files. A path may be absolute or relative to the data folder; an empty string means "no sound".
@@ -88,6 +115,9 @@ pub struct Config {
     pub deselect_after_convert: bool,
     /// After converting selected text: put the caret at the "left" or "right" end of the converted text.
     pub caret_after_convert: CaretSide,
+    /// Restoring the selection / caret after converting selected text costs one keystroke per character, so
+    /// texts longer than this many characters are not fixed up (the caret stays at the right end). 0 = no limit.
+    pub selection_restore_limit: usize,
     /// Settings window theme: "system", "light" or "dark"
     pub theme: String,
     pub min_word_len: usize,
@@ -110,17 +140,11 @@ impl Default for Config {
             auto_switch: true,
             deselect_after_convert: false,
             caret_after_convert: CaretSide::Right,
+            selection_restore_limit: 3000,
             theme: "system".into(),
             min_word_len: 2,
             disabled_languages: vec![],
-            auto_exclude_apps: [
-                "code.exe", "devenv.exe", "idea64.exe", "pycharm64.exe", "clion64.exe",
-                "rustrover64.exe", "webstorm64.exe", "windowsterminal.exe", "wt.exe",
-                "cmd.exe", "powershell.exe", "pwsh.exe", "putty.exe", "mintty.exe",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+            auto_exclude_apps: default_auto_exclude_apps(),
             disabled_apps: vec![],
             dict_dir: None,
             sounds: SoundConfig::default(),
@@ -336,6 +360,7 @@ mod tests {
     fn defaults() {
         let c = Config::default();
         assert_eq!(c.min_word_len, 2);
+        assert_eq!(c.selection_restore_limit, 3000);
         assert!((c.sounds.volume - 0.3).abs() < 1e-6);
         assert_eq!(c.sounds.on_manual_switch, "sounds/manual-switch.mp3");
         assert_eq!(c.sounds.on_auto_switch, "sounds/automatic-correction.mp3");

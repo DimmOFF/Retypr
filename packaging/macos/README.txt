@@ -7,24 +7,30 @@ INSTALL
      (If macOS still refuses, run in Terminal:
       xattr -dr com.apple.quarantine /Applications/Retypr.app )
 
-PERMISSIONS (required, otherwise the keyboard hook receives nothing)
+PERMISSIONS (required, otherwise the keyboard tap receives nothing)
   System Settings -> Privacy & Security ->
     * Accessibility      -> add Retypr and switch it on
     * Input Monitoring   -> add Retypr and switch it on
   Then quit and start Retypr again.
 
-QUIT
-  Retypr runs in the background without a Dock icon.
-  Quit it with:  pkill Retypr    (or Activity Monitor -> Retypr -> Quit)
+USE
+  Retypr lives in the menu bar (no Dock icon). Click its icon for the menu:
+  Settings, Auto-switching, Sounds, Start at login, Open settings folder, Quit Retypr.
 
-CONFIG
-  ~/Library/Application Support/retypr/config.toml
-  (inside an app bundle the portable "data" folder is not used; see the project README.)
-  The default sounds are copied from the app bundle into "sounds" next to config.toml on first run.
-  Dictionaries for better automatic detection are downloaded from Retypr's Settings window
-  on Windows; on macOS put <language>.txt word lists into the "dict" folder next to config.toml.
+  Default hotkeys (change them in Settings > Hotkeys):
+    Ctrl+Option+Z            convert the last word (press again to cycle through all layouts)
+    Ctrl+Option+Shift+Z      convert the selected text
+    Ctrl+Option+A            turn auto-switching on or off
+    Ctrl+Option+Shift+A      turn auto-switching on or off for the current app
 
-KNOWN LIMITATIONS OF THE macOS BUILD
-  The macOS port is still early: there is no menu bar icon or settings window yet
-  (edit config.toml by hand), and switching the system input source is not implemented
-  yet - text is converted, but you have to switch the layout yourself.
+  Automatic correction needs word lists: Settings > Dictionaries > Download.
+  The menu bar icon is blue when auto-switching is on, gray when it is off, and half blue / half gray when it is
+  paused for the app you are using.
+
+FILES
+  ~/Library/Application Support/retypr/    config.toml, dict/ (word lists), sounds/
+  The default sounds are copied there from the app bundle on first run.
+
+NOTE
+  This is the first macOS release; it was written without access to a Mac, so please report any problem
+  at https://github.com/DimmOFF/Retypr

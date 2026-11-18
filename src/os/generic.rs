@@ -43,11 +43,13 @@ fn map(k: RKey) -> K {
     }
 }
 
-pub fn run<F>(handler: F) -> Result<()>
+pub fn run<F, I>(handler: F, init: I, _tick: fn(), on_exit: fn()) -> Result<()>
 where
     F: Fn(KeyEvent) -> bool + Send + Sync + 'static,
+    I: FnOnce() -> Result<()>,
 {
-    rdev::grab(move |ev| {
+    init()?;
+    let result = rdev::grab(move |ev| {
         let (down, key, nm) = match &ev.event_type {
             EventType::KeyPress(k) => (true, map(*k), name(*k)),
             EventType::KeyRelease(k) => (false, map(*k), name(*k)),
@@ -57,7 +59,9 @@ where
         let text = ev.name.clone().unwrap_or_default();
         if handler(KeyEvent { down, key, text, name: nm }) { None } else { Some(ev) }
     })
-    .map_err(|e| anyhow::anyhow!("could not install the keyboard hook: {e:?}"))
+    .map_err(|e| anyhow::anyhow!("could not install the keyboard hook: {e:?}"));
+    on_exit();
+    result
 }
 
 pub fn current_layout() -> LayoutId { 0 }

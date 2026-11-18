@@ -3,7 +3,8 @@
 A keyboard layout switcher in the spirit of Punto Switcher: it fixes text typed in the wrong layout, either
 automatically or with hotkeys. Written in Rust.
 
-**Windows is the main target.** The macOS and Linux ports are experimental (see [Platform status](#platform-status)).
+**Windows and macOS are supported** (macOS support is new in 0.2.0 and has seen far less testing); Linux is
+experimental. See [Platform status](#platform-status).
 
 ## Features
 
@@ -34,6 +35,10 @@ automatically or with hotkeys. Written in Rust.
 3. Optional: turn on **Start with Windows** from the tray menu or *Settings > General*.
 
 Windows may show a SmartScreen warning because the executable is not code-signed.
+
+**macOS:** open the `.dmg`, drag `Retypr.app` to *Applications* and start it (first time: right-click > *Open*).
+Retypr lives in the menu bar and needs two permissions in *System Settings > Privacy & Security*:
+**Accessibility** and **Input Monitoring**. Grant them, then start Retypr again. The tray menu is the menu bar icon.
 
 ## Tray icon
 
@@ -66,7 +71,8 @@ data/
   `automatic-correction.mp3` to change them, or delete them for silence. If they are missing, Retypr just plays nothing.
 * *Start with Windows* repoints itself to the new location the next time Retypr starts.
 * If the program folder is not writable (for example *Program Files*), Retypr falls back to
-  `%APPDATA%\retypr\config`. Set the `RETYPR_DATA_DIR` environment variable to force a folder.
+  `%APPDATA%\retypr\config`. On macOS the app bundle is never written to: settings live in
+  `~/Library/Application Support/retypr`. Set the `RETYPR_DATA_DIR` environment variable to force a folder.
 * Settings from older versions (`%APPDATA%\retypr`) are not used any more.
 
 ## Hotkeys
@@ -81,6 +87,11 @@ toggle_auto       = "Alt+Pause"
 toggle_app_auto   = "Alt+Shift+Pause"
 ```
 
+**macOS defaults** (Mac keyboards have no Pause key): `Ctrl+Alt+Z` convert the last word, `Ctrl+Alt+Shift+Z` convert the
+selection, `Ctrl+Alt+A` toggle auto-switching, `Ctrl+Alt+Shift+A` toggle it for the current app. On a Mac `Alt` means
+**Option** and `Win` means **Command** (`Option`, `Opt`, `Command` and `Cmd` are accepted too). Use `F13`-`F15` where
+Windows uses `PrintScreen`, `ScrollLock` and `Pause`.
+
 Format: modifiers (`Ctrl`, `Alt`, `Shift`, `Win`) plus one key: `Pause`, `Break` (= Ctrl+Pause), `ScrollLock`,
 `CapsLock`, `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `PrintScreen`, `Menu`, `Space`, `Tab`, `Enter`,
 `Esc`, arrows, `F1`-`F24`, `A`-`Z`, `0`-`9`, `Grave`. For keyboards without a Pause key try
@@ -93,7 +104,8 @@ Format: modifiers (`Ctrl`, `Alt`, `Shift`, `Win`) plus one key: `Pause`, `Break`
 * **Retypr disabled** (`disabled_apps`) - all keys, including Pause, pass through untouched. Games, remote desktops.
 * Press `Alt+Shift+Pause` in any window to toggle the first list for that app.
 
-Names are executable names in lowercase, for example `code.exe`.
+Names are executable names in lowercase: `code.exe` on Windows, `electron` or `terminal` on macOS (the name of the
+binary inside the `.app`).
 
 ## Dictionaries and detection
 
@@ -123,6 +135,7 @@ dictionaries automatically. Not every language has a list available.
 | `auto_exclude_apps`, `disabled_apps` | Per-application rules (see above). |
 | `deselect_after_convert` | `true`: remove the selection after converting selected text. Default `false`: keep it, so the hotkey can be pressed again to cycle layouts. |
 | `caret_after_convert` | `"left"` or `"right"`: which end of the converted text the caret ends up at. |
+| `selection_restore_limit` | Restoring the selection or caret after converting selected text costs one keystroke per character, so texts longer than this many characters are not fixed up (default 3000; 0 = no limit). |
 | `theme` | Settings window theme: `"system"`, `"light"` or `"dark"`. |
 | `dict_dir` | Optional dictionary folder (absolute or relative to `data`). Default `data/dict`. |
 | `[sounds]` | `enabled`, `volume` (0.0-1.0, default 0.3) and `on_manual_switch`, `on_auto_switch`, `on_selection_convert`, `on_rule_toggle`: file paths, absolute or relative to `data`; empty = no sound. |
@@ -145,13 +158,17 @@ macOS options and signing variables are described at the top of `build-macos.sh`
 
 Run the unit tests with `cargo test`.
 
+The version lives in `Cargo.toml` (and in [CHANGELOG.md](CHANGELOG.md)); bump it for every release.
+
 ## Platform status
 
-* **Windows** - full feature set.
-* **macOS** - builds a universal `.dmg`, but there is no menu bar icon or settings window yet and switching the system
-  input source is not implemented (text is converted, the layout must be switched by hand). The Accessibility and
-  Input Monitoring permissions are required. Settings live in `~/Library/Application Support/retypr`.
-* **Linux** - X11 only, two layouts, experimental.
+* **Windows** - the reference platform, full feature set.
+* **macOS** - full feature set in principle (menu bar icon, settings window, any installed input source, per-app rules,
+  dictionaries). New in 0.2.0 and developed without access to a Mac, so expect rough edges; please report them.
+  Known differences: no code signing by default (see `build-macos.sh`), the *Restart as administrator* item does not
+  exist, the focused app is detected by polling (up to ~0.25 s delay), and switching the input source depends on the
+  system setting *Automatically switch to a document's input source*.
+* **Linux** - X11 only, two layouts, no tray or settings window. Experimental.
 
 ## Troubleshooting
 
@@ -159,6 +176,10 @@ Run the unit tests with `cargo test`.
   *Restart as administrator*.
 * **Auto-switching misbehaves in a program** - add its executable to the *No auto-switching* list.
 * **The exe in `dist` is old** - run `build.cmd rebuild`.
+* **macOS: nothing happens when typing** - the *Accessibility* and *Input Monitoring* permissions are missing (or were
+  granted to an older copy). Remove Retypr from both lists, add it again, and restart it.
+* **macOS: the app does not start from the DMG** - macOS blocks unsigned downloads: right-click > *Open* once, or run
+  `xattr -dr com.apple.quarantine /Applications/Retypr.app`.
 
 ## Releases
 

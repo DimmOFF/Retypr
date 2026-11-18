@@ -18,11 +18,14 @@ log = "0.4"
 env_logger = "0.11"
 single-instance = "0.3"
 
-[target.'cfg(windows)'.dependencies]
+# Windows and macOS: settings window, tray / menu bar icon, dictionary downloads
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"] }  # settings window (egui)
 ureq = "2"   # dictionary download in Settings
 rfd = { version = "0.15", default-features = false }  # file picker dialog
-tray-icon = "0.19"   # tray icon + menu (muda inside)
+tray-icon = "0.19"   # tray icon / menu bar icon + menu (muda inside)
+
+[target.'cfg(windows)'.dependencies]
 winreg = "0.52"      # start with Windows (HKCU\...\Run)
 windows = { version = "0.58", features = [
     "Win32_Foundation",
@@ -33,8 +36,16 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# Non-Windows platforms use rdev + enigo for now (best effort)
-[target.'cfg(not(windows))'.dependencies]
+# macOS: native backend (event tap, input sources, CGEvent typing) and the main event loop for the menu bar icon
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.23"
+core-foundation = "0.9"
+dispatch = "0.2"     # hop onto the main queue (Text Input Sources must be used on the main thread)
+libc = "0.2"
+tao = "0.30"         # event loop that tray-icon needs on macOS
+
+# Linux and the rest: best effort (rdev + enigo)
+[target.'cfg(all(not(windows), not(target_os = "macos")))'.dependencies]
 rdev = { version = "0.5", features = ["unstable_grab"] }
 enigo = "0.2"
 

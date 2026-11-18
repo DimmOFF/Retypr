@@ -24,13 +24,13 @@ Then open the **Actions** tab: the CI run appears there.
 
 ## Publishing a version
 
-1. Bump `version` in `Cargo.toml` (for example `0.1.0`) and commit.
+1. Bump `version` in `Cargo.toml` (for example `0.2.0`) and commit.
 2. Tag and push:
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v0.2.0
+   git push origin v0.2.0
    ```
-   The tag **must match** the version in `Cargo.toml` (`v0.1.0` and `0.1.0`), otherwise the build stops with a clear error.
+   The tag **must match** the version in `Cargo.toml` (`v0.2.0` and `0.2.0`), otherwise the build stops with a clear error.
 3. When the build finishes, open **Releases**, review the draft and its files, then press **Publish release**.
 
 Without a tag: Actions > Release > Run workflow. The packages appear under **Artifacts** at the bottom of the run page.

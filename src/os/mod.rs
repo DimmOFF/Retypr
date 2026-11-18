@@ -7,6 +7,9 @@ pub struct AfterConvert {
     pub keep_selection: bool,
     /// caret at the left end of the converted text (otherwise at the right end)
     pub caret_left: bool,
+    /// Restoring the selection / caret costs one keystroke per character. Texts longer than this are skipped
+    /// (the caret then simply stays at the right end). 0 = no limit.
+    pub max_chars: usize,
 }
 
 impl AfterConvert {
@@ -14,6 +17,7 @@ impl AfterConvert {
         Self {
             keep_selection: !c.deselect_after_convert,
             caret_left: c.caret_after_convert == crate::config::CaretSide::Left,
+            max_chars: c.selection_restore_limit,
         }
     }
 }
@@ -33,6 +37,9 @@ pub fn caret_plan(a: AfterConvert, n: usize) -> Vec<Step> {
     let mut v = Vec::new();
     if n == 0 {
         return v;
+    }
+    if a.max_chars > 0 && n > a.max_chars {
+        return v; // too long to fix up key by key
     }
     match (a.keep_selection, a.caret_left) {
         // text stays unselected, caret already at the right end
@@ -87,9 +94,15 @@ mod windows;
 #[cfg(windows)]
 pub use self::windows::*;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use self::macos::*;
+
+// Linux and everything else: best-effort backend
+#[cfg(all(not(windows), not(target_os = "macos")))]
 mod generic;
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub use self::generic::*;
 
 #[cfg(test)]
@@ -97,7 +110,7 @@ mod tests {
     use super::*;
 
     fn plan(keep: bool, left: bool, n: usize) -> Vec<Step> {
-        caret_plan(AfterConvert { keep_selection: keep, caret_left: left }, n)
+        caret_plan(AfterConvert { keep_selection: keep, caret_left: left, max_chars: 0 }, n)
     }
 
     #[test]
@@ -115,6 +128,14 @@ mod tests {
     fn keep_selection_caret_left() {
         use Step::*;
         assert_eq!(plan(true, true, 2), vec![ShiftDown, Left, Left, ShiftUp]);
+    }
+
+    #[test]
+    fn long_texts_skip_the_fixup() {
+        let a = |max_chars| AfterConvert { keep_selection: true, caret_left: true, max_chars };
+        assert_eq!(caret_plan(a(10), 10).len(), 12); // at the limit: ShiftDown + 10 x Left + ShiftUp
+        assert!(caret_plan(a(10), 11).is_empty()); // above it: nothing is pressed
+        assert_eq!(caret_plan(a(0), 100_000).len(), 100_002); // 0 = no limit
     }
 
     #[test]

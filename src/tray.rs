@@ -1,9 +1,9 @@
-//! Tray icon and menu. Everything lives in the main thread (the same thread that runs the hook message loop),
-//! so the tray objects are kept in a thread_local instead of Send structures.
+//! Tray icon (Windows) / menu bar icon (macOS) and its menu. Everything lives in the main thread, so the objects are
+//! kept in a thread_local instead of Send structures.
 //!
 //! IMPORTANT: menu item objects are never touched inside the menu's own click handler (re-entering the
 //! menu library from its callback crashes it). The handler only changes `state` and raises a dirty flag;
-//! `tick()`, called by a timer from the message loop, then refreshes the check marks, icon and tooltip.
+//! `tick()`, called by a timer from the main loop, then refreshes the check marks, icon and tooltip.
 use crate::{
     autostart,
     config::Config,
@@ -21,8 +21,13 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
 };
 
-/// Title of the settings window (also used to find, focus and close it).
+/// Title of the settings window (also used to find, focus and close it on Windows).
 pub const SETTINGS_TITLE: &str = "Retypr Settings";
+
+#[cfg(windows)]
+const START_LABEL: &str = "Start with Windows";
+#[cfg(target_os = "macos")]
+const START_LABEL: &str = "Start at login";
 
 struct Tray {
     tray: TrayIcon,
@@ -42,7 +47,7 @@ struct Ids {
     sound: MenuId,
     start: MenuId,
     folder: MenuId,
-    admin: MenuId,
+    admin: Option<MenuId>,
     quit: MenuId,
 }
 
@@ -60,7 +65,23 @@ fn current_kind() -> IconKind {
 }
 
 fn make_icon(kind: IconKind) -> Icon {
-    Icon::from_rgba(icon::rgba(kind), icon::SIZE as u32, icon::SIZE as u32).expect("icon")
+    let base = icon::rgba(kind);
+    let s = icon::SIZE;
+    if cfg!(target_os = "macos") {
+        // double the size for the Retina menu bar (nearest neighbour keeps the crisp pixel look)
+        let n = s * 2;
+        let mut out = vec![0u8; n * n * 4];
+        for y in 0..n {
+            for x in 0..n {
+                let from = ((y / 2) * s + x / 2) * 4;
+                let to = (y * n + x) * 4;
+                out[to..to + 4].copy_from_slice(&base[from..from + 4]);
+            }
+        }
+        Icon::from_rgba(out, n as u32, n as u32).expect("icon")
+    } else {
+        Icon::from_rgba(base, s as u32, s as u32).expect("icon")
+    }
 }
 
 fn tooltip() -> String {
@@ -70,6 +91,7 @@ fn tooltip() -> String {
         AppMode::Off => s.push_str(" (disabled in this app)"),
         _ => {}
     }
+    #[cfg(windows)]
     if os::is_elevated() {
         s.push_str(" (administrator)");
     }
@@ -100,6 +122,9 @@ pub fn tick() {
     }
 }
 
+// ───────────────────────── the settings window ─────────────────────────
+
+#[cfg(windows)]
 fn open_settings() {
     // already open? just bring it to the front
     if os::focus_window(SETTINGS_TITLE) {
@@ -109,6 +134,53 @@ fn open_settings() {
         let _ = std::process::Command::new(exe).arg("--settings").spawn();
     }
 }
+
+#[cfg(windows)]
+pub fn close_settings() {
+    os::close_window(SETTINGS_TITLE);
+}
+
+/// macOS: the settings window is a child process. We cannot find its window by title without extra permissions,
+/// so we talk to it through small request files in the data folder, which it polls (see settings.rs).
+#[cfg(target_os = "macos")]
+static SETTINGS_CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+fn request_file(name: &str) {
+    if let Some(dir) = Config::dir() {
+        let _ = std::fs::write(dir.join(name), b"");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_settings() {
+    let mut guard = SETTINGS_CHILD.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(child) = guard.as_mut() {
+        if matches!(child.try_wait(), Ok(None)) {
+            request_file(".settings-raise"); // already open: ask it to come to the front
+            return;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(child) = std::process::Command::new(exe).arg("--settings").spawn() {
+            *guard = Some(child);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn close_settings() {
+    if let Some(mut child) = SETTINGS_CHILD.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        let _ = child.kill();
+    }
+}
+
+fn open_folder(dir: std::path::PathBuf) {
+    let opener = if cfg!(target_os = "macos") { "open" } else { "explorer" };
+    let _ = std::process::Command::new(opener).arg(dir).spawn();
+}
+
+// ───────────────────────── menu ─────────────────────────
 
 /// Menu click handler. It must not touch the menu items (see the module docs).
 fn on_menu(ids: &Ids, e: MenuEvent) {
@@ -126,9 +198,10 @@ fn on_menu(ids: &Ids, e: MenuEvent) {
         open_settings();
     } else if *id == ids.folder {
         if let Some(dir) = Config::dir() {
-            let _ = std::process::Command::new("explorer").arg(dir).spawn();
+            open_folder(dir);
         }
-    } else if *id == ids.admin {
+    } else if Some(id) == ids.admin.as_ref() {
+        #[cfg(windows)]
         match os::restart_elevated() {
             Ok(()) => os::quit(), // the new copy waits until we release the single-instance lock
             Err(err) => log::warn!("{err:#}"),
@@ -142,19 +215,26 @@ pub fn init(toggle_hint: &str) -> Result<()> {
     let settings = MenuItem::new("Settings…", true, None);
     let auto = CheckMenuItem::new(format!("Auto-switching ({toggle_hint})"), true, state::auto(), None);
     let sound = CheckMenuItem::new("Sounds", true, state::sound(), None);
-    let start = CheckMenuItem::new("Start with Windows", true, autostart::is_enabled(), None);
+    let start = CheckMenuItem::new(START_LABEL, true, autostart::is_enabled(), None);
     let folder = MenuItem::new("Open settings folder", true, None);
-    let elevated = os::is_elevated();
-    let admin = MenuItem::new(
-        if elevated { "Running as administrator ✓" } else { "Restart as administrator" },
-        !elevated,
-        None,
-    );
-    let quit = MenuItem::new("Exit", true, None);
+    #[cfg(windows)]
+    let admin = {
+        let elevated = os::is_elevated();
+        MenuItem::new(
+            if elevated { "Running as administrator ✓" } else { "Restart as administrator" },
+            !elevated,
+            None,
+        )
+    };
+    let quit = MenuItem::new(if cfg!(target_os = "macos") { "Quit Retypr" } else { "Exit" }, true, None);
     let (sep1, sep2) = (PredefinedMenuItem::separator(), PredefinedMenuItem::separator());
 
     let menu = Menu::new();
-    let items: [&dyn IsMenuItem; 9] = [&settings, &auto, &sound, &start, &sep1, &folder, &admin, &sep2, &quit];
+    let mut items: Vec<&dyn IsMenuItem> = vec![&settings, &auto, &sound, &start, &sep1, &folder];
+    #[cfg(windows)]
+    items.push(&admin);
+    items.push(&sep2);
+    items.push(&quit);
     menu.append_items(&items)?;
 
     let ids = Ids {
@@ -163,7 +243,10 @@ pub fn init(toggle_hint: &str) -> Result<()> {
         sound: sound.id().clone(),
         start: start.id().clone(),
         folder: folder.id().clone(),
-        admin: admin.id().clone(),
+        #[cfg(windows)]
+        admin: Some(admin.id().clone()),
+        #[cfg(not(windows))]
+        admin: None,
         quit: quit.id().clone(),
     };
 
@@ -176,14 +259,14 @@ pub fn init(toggle_hint: &str) -> Result<()> {
 
     TRAY.with(|t| *t.borrow_mut() = Some(Tray { tray, auto, sound, start, kind }));
 
-    // Invoked from the window procedure in the main thread. A panic must never unwind into the OS.
+    // Invoked from the main thread. A panic must never unwind into the OS.
     MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
         let _ = catch_unwind(AssertUnwindSafe(|| on_menu(&ids, e)));
     }));
     Ok(())
 }
 
-/// Remove the icon before exiting so it does not linger in the tray.
+/// Remove the icon before exiting so it does not linger in the tray / menu bar.
 pub fn shutdown() {
     TRAY.with(|t| {
         t.borrow_mut().take();
