@@ -587,8 +587,7 @@ const HK_ROWS: [(&str, &str); 4] = [
 ];
 
 pub fn run() -> anyhow::Result<()> {
-    let inst = single_instance::SingleInstance::new("Retypr-settings-6f1c9d3a")
-        .map_err(|e| anyhow::anyhow!("single-instance: {e:?}"))?;
+    let inst = crate::instance::Instance::new("Retypr-settings-6f1c9d3a")?;
     if !inst.is_single() {
         return Ok(()); // the settings window is already open
     }

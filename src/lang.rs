@@ -80,6 +80,7 @@ impl Lang {
     pub const UK: Lang = Lang(0x22);
 
     /// From a full Windows LANGID (as found in the low word of an HKL).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn from_langid(langid: u16) -> Lang {
         Lang(langid & 0x3FF)
     }

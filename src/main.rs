@@ -8,6 +8,7 @@ mod config;
 mod detector;
 mod engine;
 mod hotkey;
+mod instance;
 #[cfg(any(windows, target_os = "macos"))]
 mod icon;
 mod lang;
@@ -64,7 +65,7 @@ fn run() -> anyhow::Result<()> {
     // Single instance. A second launch silently exits; after "Restart as administrator" (flag --restarted)
     // we wait until the previous copy releases the lock.
     const NAME: &str = "Retypr-6f1c9d3a-layout-switcher";
-    let make = || single_instance::SingleInstance::new(NAME).map_err(|e| anyhow::anyhow!("single-instance: {e:?}"));
+    let make = || instance::Instance::new(NAME);
     let mut slot = Some(make()?);
     if std::env::args().any(|a| a == "--restarted") {
         for _ in 0..40 {

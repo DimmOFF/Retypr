@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+* macOS: fix the start-up error "single-instance: Read-only file system". Apps started from Finder have the read-only
+  root `/` as their working directory, and the crate we used wrote its lock file there. The guard is now an `flock`
+  on a file in the per-user temp folder (macOS and Linux); Windows keeps the named mutex.
+
 ## 0.2.1
 * macOS: fix the build against `tao 0.30` (the activation policy is set on the event loop, not on its builder).
 

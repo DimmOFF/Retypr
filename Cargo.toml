@@ -1,6 +1,6 @@
 [package]
 name = "retypr"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 
 [[bin]]
@@ -16,7 +16,6 @@ directories = "5"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
-single-instance = "0.3"
 
 # Windows and macOS: settings window, tray / menu bar icon, dictionary downloads
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
@@ -25,7 +24,11 @@ ureq = "2"   # dictionary download in Settings
 rfd = { version = "0.15", default-features = false }  # file picker dialog
 tray-icon = "0.19"   # tray icon / menu bar icon + menu (muda inside)
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"         # flock for the single-instance lock; pthread_main_np on macOS
+
 [target.'cfg(windows)'.dependencies]
+single-instance = "0.3"   # named mutex
 winreg = "0.52"      # start with Windows (HKCU\...\Run)
 windows = { version = "0.58", features = [
     "Win32_Foundation",
@@ -41,7 +44,6 @@ windows = { version = "0.58", features = [
 core-graphics = "0.23"
 core-foundation = "0.9"
 dispatch = "0.2"     # hop onto the main queue (Text Input Sources must be used on the main thread)
-libc = "0.2"
 tao = "0.30"         # event loop that tray-icon needs on macOS
 
 # Linux and the rest: best effort (rdev + enigo)
