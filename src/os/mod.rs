@@ -15,7 +15,7 @@ pub struct AfterConvert {
 impl AfterConvert {
     pub fn from_config(c: &crate::config::Config) -> Self {
         Self {
-            keep_selection: !c.deselect_after_convert,
+            keep_selection: c.select_after_convert,
             caret_left: c.caret_after_convert == crate::config::CaretSide::Left,
             max_chars: c.selection_restore_limit,
         }
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn nothing_to_do() {
-        assert!(plan(false, false, 5).is_empty()); // deselected, caret at the right: nothing to press
+        assert!(plan(false, false, 5).is_empty()); // not selected, caret at the right: nothing to press
         assert!(plan(true, true, 0).is_empty());
     }
 

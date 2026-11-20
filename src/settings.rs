@@ -809,10 +809,10 @@ impl App {
         card(ui, pal, |ui| {
             row(
                 ui,
-                "Remove selection after converting",
-                "Off: the text stays selected, so pressing the hotkey again cycles to the next layout.",
+                "Select after converting",
+                "On: the converted text stays selected, so pressing the hotkey again cycles to the next layout. Off: it is left unselected.",
                 |ui| {
-                    toggle(ui, &mut self.cfg.deselect_after_convert);
+                    toggle(ui, &mut self.cfg.select_after_convert);
                 },
             );
             divider(ui);

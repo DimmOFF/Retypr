@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.4
+* Fix sounds that sometimes stopped playing until Retypr was restarted. The audio thread used to give up for good
+  if no output device existed at start-up, and it never noticed a changed default device or a stream that had died
+  (sleep/resume, a Bluetooth headset powering down, an audio-service restart). The output is now opened lazily,
+  re-checked before every sound, reopened when the default device changes or after 30 s of idleness, and retried once
+  on failure. Sound problems are written to the log instead of being swallowed.
+
+## 0.2.3
+* The selection option is positive again: **Select after converting** (`select_after_convert`), **off by default**.
+  It replaces `deselect_after_convert` (the old key is ignored). With it off, converted text is left unselected and
+  pressing the hotkey again no longer cycles through the layouts; turn it on to get the cycling back.
+
 ## 0.2.2
 * macOS: fix the start-up error "single-instance: Read-only file system". Apps started from Finder have the read-only
   root `/` as their working directory, and the crate we used wrote its lock file there. The guard is now an `flock`

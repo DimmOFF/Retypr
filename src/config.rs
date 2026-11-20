@@ -110,9 +110,9 @@ impl Default for SoundConfig {
 #[serde(default)]
 pub struct Config {
     pub auto_switch: bool,
-    /// After converting selected text: remove the selection (default: keep it, so the hotkey can be pressed
-    /// again to cycle to the next layout).
-    pub deselect_after_convert: bool,
+    /// After converting selected text: select the converted text again. This lets you press the hotkey once more
+    /// to cycle to the next layout. Default: off (the text is left unselected).
+    pub select_after_convert: bool,
     /// After converting selected text: put the caret at the "left" or "right" end of the converted text.
     pub caret_after_convert: CaretSide,
     /// Restoring the selection / caret after converting selected text costs one keystroke per character, so
@@ -138,7 +138,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             auto_switch: true,
-            deselect_after_convert: false,
+            select_after_convert: false,
             caret_after_convert: CaretSide::Right,
             selection_restore_limit: 3000,
             theme: "system".into(),
@@ -360,6 +360,7 @@ mod tests {
     fn defaults() {
         let c = Config::default();
         assert_eq!(c.min_word_len, 2);
+        assert!(!c.select_after_convert);
         assert_eq!(c.selection_restore_limit, 3000);
         assert!((c.sounds.volume - 0.3).abs() < 1e-6);
         assert_eq!(c.sounds.on_manual_switch, "sounds/manual-switch.mp3");

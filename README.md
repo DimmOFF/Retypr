@@ -16,7 +16,7 @@ experimental. See [Platform status](#platform-status).
   | Default | Action |
   |---|---|
   | `Pause` | Convert the last word. Press again to cycle through **all** installed layouts. |
-  | `Shift+Pause` | Convert the selected text (same cycling, the selection is kept by default). |
+  | `Shift+Pause` | Convert the selected text. With *Select after converting* on, press it again to cycle through all layouts. |
   | `Alt+Pause` | Turn auto-switching on or off. |
   | `Alt+Shift+Pause` | Turn auto-switching on or off for the current application. |
 
@@ -133,7 +133,7 @@ dictionaries automatically. Not every language has a list available.
 | `min_word_len` | Words shorter than this are never corrected automatically (default 2; two-letter words are converted only when a dictionary confirms it). |
 | `disabled_languages` | Language codes (`"de"`, `"ru"`...) excluded from auto-switching. Empty = all installed layouts take part. |
 | `auto_exclude_apps`, `disabled_apps` | Per-application rules (see above). |
-| `deselect_after_convert` | `true`: remove the selection after converting selected text. Default `false`: keep it, so the hotkey can be pressed again to cycle layouts. |
+| `select_after_convert` | `true`: select the converted text again after converting selected text, so the hotkey can be pressed once more to cycle layouts. Default `false`: the text is left unselected. |
 | `caret_after_convert` | `"left"` or `"right"`: which end of the converted text the caret ends up at. |
 | `selection_restore_limit` | Restoring the selection or caret after converting selected text costs one keystroke per character, so texts longer than this many characters are not fixed up (default 3000; 0 = no limit). |
 | `theme` | Settings window theme: `"system"`, `"light"` or `"dark"`. |
