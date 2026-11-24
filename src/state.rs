@@ -19,11 +19,13 @@ pub enum AppMode {
 static AUTO: AtomicBool = AtomicBool::new(true);
 static SOUND: AtomicBool = AtomicBool::new(true);
 static APP_MODE: AtomicU8 = AtomicU8::new(0);
+static SKIP_WINIT: AtomicBool = AtomicBool::new(true);
 static DIRTY: AtomicBool = AtomicBool::new(false);
 
 pub fn init(cfg: &Config) {
     AUTO.store(cfg.auto_switch, Ordering::SeqCst);
     SOUND.store(cfg.sounds.enabled, Ordering::SeqCst);
+    SKIP_WINIT.store(cfg.skip_layout_switch_for_winit_apps, Ordering::SeqCst);
 }
 
 pub fn auto() -> bool {
@@ -31,6 +33,12 @@ pub fn auto() -> bool {
 }
 pub fn sound() -> bool {
     SOUND.load(Ordering::SeqCst)
+}
+
+/// Windows: skip layout-change requests for winit-based apps (see Config::skip_layout_switch_for_winit_apps).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn skip_winit() -> bool {
+    SKIP_WINIT.load(Ordering::SeqCst)
 }
 
 pub fn app_mode() -> AppMode {

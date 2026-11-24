@@ -554,10 +554,12 @@ fn command_chord(src: &CGEventSource, code: u16) {
 }
 
 /// Erase `erase` characters, type `text`, switch the layout.
-pub fn replace_typed(erase: usize, text: &str, to: LayoutId) -> Result<()> {
+pub fn replace_typed(erase: usize, text: &str, to: Option<LayoutId>) -> Result<()> {
     // Switch first, so whatever the user types next is already in the target layout.
-    if let Err(e) = switch_to(to) {
-        log::warn!("layout switch failed: {e:#}");
+    if let Some(to) = to {
+        if let Err(e) = switch_to(to) {
+            log::warn!("layout switch failed: {e:#}");
+        }
     }
     let src = event_source()?;
     for n in 0..erase {
@@ -604,8 +606,10 @@ where
         if let Some((conv, target)) = f(&sel, cur) {
             let n = conv.replace("\r\n", "\n").chars().count();
             cb.set_text(conv)?;
-            if let Err(e) = switch_to(target) {
-                log::warn!("layout switch failed: {e:#}");
+            if after.switch_layout {
+                if let Err(e) = switch_to(target) {
+                    log::warn!("layout switch failed: {e:#}");
+                }
             }
             command_chord(&src, macplat::KC_V);
 

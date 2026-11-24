@@ -1,13 +1,13 @@
 //! Native Windows backend: WH_KEYBOARD_LL / WH_MOUSE_LL hooks, SendInput, keyboard layouts (HKL).
 use super::{caret_plan, AfterConvert, KeyEvent, LayoutId, Step, K};
 use crate::hotkey::{DIGITS, FKEYS, LETTERS};
-use crate::lang::Lang;
+use crate::{config::Config, lang::Lang};
 use anyhow::{anyhow, Result};
 use std::{
     collections::HashMap,
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{
-        atomic::{AtomicIsize, Ordering},
+        atomic::{AtomicBool, AtomicIsize, Ordering},
         Mutex, OnceLock,
     },
     thread::sleep,
@@ -32,7 +32,7 @@ use windows::{
                 INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, MAP_VIRTUAL_KEY_TYPE, VIRTUAL_KEY,
             },
             WindowsAndMessaging::{
-                CallNextHookEx, DispatchMessageW, EnumWindows, GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GUITHREADINFO, GetWindowTextW, IsIconic,
+                CallNextHookEx, DispatchMessageW, EnumWindows, GetForegroundWindow, GetClassNameW, GetGUIThreadInfo, IsHungAppWindow, IsWindow, GetMessageW, GUITHREADINFO, GetWindowTextW, IsIconic,
                 GetWindowThreadProcessId, MessageBoxW, PostMessageW, PostQuitMessage, SetTimer, SetWindowsHookExW,
                 TranslateMessage, MB_ICONERROR, MB_ICONWARNING, MB_OK,
                 HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WH_MOUSE_LL,
@@ -195,8 +195,7 @@ fn vk_name(vk: u32) -> &'static str {
 
 /// vk -> the character in the focused window's current layout (without side effects on dead keys).
 unsafe fn translate(vk: u32, scan: u32) -> String {
-    let (_, tid, _) = input_target();
-    let hkl = GetKeyboardLayout(tid);
+    let hkl = GetKeyboardLayout(input_target().focus_tid);
 
     let mut st = [0u8; 256];
     if GetAsyncKeyState(0x10) as u16 & 0x8000 != 0 {
@@ -250,20 +249,26 @@ fn hkl(id: LayoutId) -> HKL {
 /// (foreground window, thread that owns the keyboard focus, window that has the focus).
 /// The focus window can belong to another thread than the top-level window (terminals, some browsers), and the
 /// keyboard layout is per thread, so layouts must be read from - and switched for - the FOCUS thread.
-unsafe fn input_target() -> (HWND, u32, HWND) {
+struct Target {
+    fg: HWND,
+    fg_tid: u32,
+    focus: HWND,
+    focus_tid: u32,
+}
+
+unsafe fn input_target() -> Target {
     let fg = GetForegroundWindow();
     let fg_tid = GetWindowThreadProcessId(fg, None);
     let mut gi = GUITHREADINFO { cbSize: std::mem::size_of::<GUITHREADINFO>() as u32, ..Default::default() };
     let _ = GetGUIThreadInfo(fg_tid, &mut gi);
     let focus = if gi.hwndFocus.0.is_null() { fg } else { gi.hwndFocus };
-    let tid = if focus == fg { fg_tid } else { GetWindowThreadProcessId(focus, None) };
-    (fg, tid, focus)
+    let focus_tid = if focus == fg { fg_tid } else { GetWindowThreadProcessId(focus, None) };
+    Target { fg, fg_tid, focus, focus_tid }
 }
 
 pub fn current_layout() -> LayoutId {
     unsafe {
-        let (_, tid, _) = input_target();
-        GetKeyboardLayout(tid).0 as isize
+        GetKeyboardLayout(input_target().focus_tid).0 as isize
     }
 }
 
@@ -356,14 +361,80 @@ fn post_layout_request(hwnd: HWND, id: LayoutId) -> Result<()> {
 
 /// Ask the focused window (and its top-level window) to switch to layout `id`. Asynchronous: the target thread
 /// handles the request a moment later.
+fn is_winit_window(hwnd: HWND) -> bool {
+    let mut buf = [0u16; 64];
+    let n = unsafe { GetClassNameW(hwnd, &mut buf) };
+    n > 0 && String::from_utf16_lossy(&buf[..n as usize]) == "Window Class"
+}
+
+/// May a layout-change request be sent to the focused window? Apps built on winit 0.30 (egui/eframe and others) can
+/// freeze for good on such a request (a known winit bug, fixed in winit 0.31), so by default they only get the
+/// corrected TEXT; the layout is left alone. Detected by winit's default window class name.
+fn layout_switch_allowed() -> bool {
+    if !crate::state::skip_winit() {
+        return true;
+    }
+    let t = unsafe { input_target() };
+    let winit = is_winit_window(t.fg) || is_winit_window(t.focus);
+    if winit {
+        log::debug!("winit-based window: the layout is not switched (see skip_layout_switch_for_winit_apps)");
+    }
+    !winit
+}
+
+static WATCHING: AtomicBool = AtomicBool::new(false);
+
+/// Safety net: if the window that got a layout-change request stops responding (Windows calls a window "hung"
+/// after 5 s), remember its app in `no_layout_switch_apps` so it never happens again, and tell the user.
+fn watch_for_hang(hwnd: HWND) {
+    if WATCHING.swap(true, Ordering::SeqCst) {
+        return; // one watcher at a time
+    }
+    let handle = hwnd.0 as isize;
+    let exe = exe_of(hwnd);
+    std::thread::spawn(move || {
+        let hwnd = HWND(handle as *mut core::ffi::c_void);
+        let hung = |h: HWND| unsafe { IsWindow(h).as_bool() && IsHungAppWindow(h).as_bool() };
+        sleep(Duration::from_secs(7));
+        if hung(hwnd) {
+            sleep(Duration::from_secs(3)); // still hung: not just a busy moment
+            if hung(hwnd) && !exe.is_empty() {
+                remember_hanging_app(&exe);
+            }
+        }
+        WATCHING.store(false, Ordering::SeqCst);
+    });
+}
+
+fn remember_hanging_app(exe: &str) {
+    let Ok(mut c) = Config::load_or_create() else { return };
+    if c.no_layout_switch_apps.iter().any(|x| x.eq_ignore_ascii_case(exe)) {
+        return;
+    }
+    c.no_layout_switch_apps.push(exe.to_string());
+    if c.save().is_ok() {
+        warn(&format!(
+            "{exe} stopped responding right after Retypr changed the keyboard layout.\n\n\
+             Retypr will not switch the layout in it any more (Settings > Apps > Don't switch the layout). \
+             The text is still corrected."
+        ));
+    }
+}
+
 pub fn switch_to(id: LayoutId) -> Result<()> {
-    let (fg, focus) = unsafe {
-        let (fg, _, focus) = input_target();
-        (fg, focus)
-    };
-    let first = post_layout_request(fg, id);
-    if focus != fg {
-        let _ = post_layout_request(focus, id);
+    let t = unsafe { input_target() };
+    // Already in that layout: send nothing. Every request makes the target process a layout change, which some
+    // apps handle slowly (or badly), so the fewer requests the better.
+    if unsafe { GetKeyboardLayout(t.focus_tid) }.0 as isize == id {
+        return Ok(());
+    }
+    let first = post_layout_request(t.fg, id);
+    // the focus window needs its own request only when it belongs to ANOTHER thread (the layout is per thread)
+    if t.focus_tid != t.fg_tid {
+        let _ = post_layout_request(t.focus, id);
+    }
+    if first.is_ok() {
+        watch_for_hang(t.fg);
     }
     first
 }
@@ -372,19 +443,28 @@ pub fn switch_to(id: LayoutId) -> Result<()> {
 /// if not: some apps are slow, or ignore the first request.
 fn ensure_layout_later(id: LayoutId) {
     std::thread::spawn(move || {
-        for attempt in 0..3 {
-            for _ in 0..6 {
-                if current_layout() == id {
-                    return;
-                }
-                sleep(Duration::from_millis(15));
+        let window = unsafe { GetForegroundWindow() }.0 as isize;
+        let applied = || current_layout() == id;
+        for _ in 0..8 {
+            if applied() {
+                return; // the normal case: apps answer within a few milliseconds
             }
-            log::debug!("layout request #{attempt} is not applied yet, repeating it");
-            let _ = switch_to(id);
+            sleep(Duration::from_millis(15));
         }
-        if current_layout() != id {
-            log::warn!("the layout did not switch to {id:#x}");
+        // About 120 ms and still not applied: repeat the request ONCE, and only if the same window still has
+        // the focus (never poke another window, and never hammer a slow one).
+        if unsafe { GetForegroundWindow() }.0 as isize != window {
+            return;
         }
+        log::debug!("the layout request is not applied yet, repeating it once");
+        let _ = switch_to(id);
+        for _ in 0..8 {
+            if applied() {
+                return;
+            }
+            sleep(Duration::from_millis(15));
+        }
+        log::warn!("the layout did not switch to {id:#x}");
     });
 }
 
@@ -428,12 +508,16 @@ fn send(inputs: &[INPUT]) {
 }
 
 /// Erase `erase` characters, type `text` (Unicode, independent of the layout), switch the layout.
-pub fn replace_typed(erase: usize, text: &str, to: LayoutId) -> Result<()> {
+pub fn replace_typed(erase: usize, text: &str, to: Option<LayoutId>) -> Result<()> {
     // Switch the layout FIRST. The text below is typed as Unicode, so it does not depend on the layout, but
     // whatever the user types next must already be in the target layout. Doing it last left a window in which
     // fast typing went out in the old layout.
-    if let Err(e) = switch_to(to) {
-        log::warn!("layout switch request failed: {e:#}");
+    // `to` is None for apps listed in `no_layout_switch_apps`: the text is converted, the layout is left alone.
+    let to = to.filter(|_| layout_switch_allowed());
+    if let Some(to) = to {
+        if let Err(e) = switch_to(to) {
+            log::warn!("layout switch request failed: {e:#}");
+        }
     }
     let mut v = Vec::with_capacity(erase * 2 + text.len() * 2);
     for _ in 0..erase {
@@ -444,8 +528,12 @@ pub fn replace_typed(erase: usize, text: &str, to: LayoutId) -> Result<()> {
         v.push(uni(u, false));
         v.push(uni(u, true));
     }
-    send(&v);
-    ensure_layout_later(to);
+    // Gentle pacing: a few key presses per call with a 1 ms pause, instead of one big burst. Apps that do heavy
+    // work per key press cope far better, and for a normal word it adds only a few milliseconds.
+    send_chunked(&v, 8, 1);
+    if let Some(to) = to {
+        ensure_layout_later(to);
+    }
     Ok(())
 }
 
@@ -487,11 +575,16 @@ where
         if let Some((conv, target)) = f(&sel, cur) {
             let n = conv.replace("\r\n", "\n").chars().count();
             cb.set_text(conv)?;
-            if let Err(e) = switch_to(target) {
-                log::warn!("layout switch request failed: {e:#}");
+            let do_switch = after.switch_layout && layout_switch_allowed();
+            if do_switch {
+                if let Err(e) = switch_to(target) {
+                    log::warn!("layout switch request failed: {e:#}");
+                }
             }
             send(&[vk(VK_CONTROL, false), vk(VK_V, false), vk(VK_V, true), vk(VK_CONTROL, true)]);
-            ensure_layout_later(target);
+            if do_switch {
+                ensure_layout_later(target);
+            }
 
             // Caret position / keep or drop the selection (see os::caret_plan). These keys wait in the same input
             // queue right behind Ctrl+V, so the app handles them after the paste - no need to sleep first.

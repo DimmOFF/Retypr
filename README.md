@@ -103,6 +103,8 @@ Format: modifiers (`Ctrl`, `Alt`, `Shift`, `Win`) plus one key: `Pause`, `Break`
   JetBrains IDEs, Windows Terminal, cmd, PowerShell, PuTTY.
 * **Retypr disabled** (`disabled_apps`) - all keys, including Pause, pass through untouched. Games, remote desktops.
 * Press `Alt+Shift+Pause` in any window to toggle the first list for that app.
+* **Don't switch the layout** (`no_layout_switch_apps`) - text is still corrected, but the keyboard layout is not
+  switched. A troubleshooting aid for apps that react badly to layout-change requests.
 
 Names are executable names in lowercase: `code.exe` on Windows, `electron` or `terminal` on macOS (the name of the
 binary inside the `.app`).
@@ -175,6 +177,15 @@ The version lives in `Cargo.toml` (and in [CHANGELOG.md](CHANGELOG.md)); bump it
 * **Hotkeys do nothing in some windows** - those windows run as administrator. Use the tray item
   *Restart as administrator*.
 * **Auto-switching misbehaves in a program** - add its executable to the *No auto-switching* list.
+* **A program freezes for good when Retypr corrects a word** (0% CPU, does not recover even after Retypr exits) - the
+  program is most likely built on **winit 0.30** (egui/eframe apps such as PhotoCraft, Warp...). Switching the
+  keyboard layout from outside freezes such apps on Windows; this is a winit bug, fixed in winit 0.31
+  (rust-windowing/winit#4582), and any layout switcher triggers it. Retypr therefore does not switch the layout in
+  windows of class `Window Class` (setting *Skip layout switching in winit-based apps*, on by default) and adds any
+  program that stops responding right after a layout change to *Don't switch the layout* by itself. For other
+  misbehaving programs add the executable to *Don't switch the layout* (Settings > Apps), then, if needed, to *No
+  auto-switching* and *Retypr disabled*; the list that makes the problem go away shows what the program dislikes.
+  Please report it on GitHub with the program's name.
 * **The exe in `dist` is old** - run `build.cmd rebuild`.
 * **macOS: nothing happens when typing** - the *Accessibility* and *Input Monitoring* permissions are missing (or were
   granted to an older copy). Remove Retypr from both lists, add it again, and restart it.

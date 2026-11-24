@@ -17,12 +17,22 @@ use std::{
 struct Rules {
     disabled: HashSet<String>,
     no_auto: HashSet<String>,
+    no_switch: HashSet<String>,
 }
 
 impl Rules {
     fn from_config(cfg: &Config) -> Self {
         let set = |v: &Vec<String>| v.iter().map(|s| s.trim().to_lowercase()).collect();
-        Self { disabled: set(&cfg.disabled_apps), no_auto: set(&cfg.auto_exclude_apps) }
+        Self {
+            disabled: set(&cfg.disabled_apps),
+            no_auto: set(&cfg.auto_exclude_apps),
+            no_switch: set(&cfg.no_layout_switch_apps),
+        }
+    }
+
+    /// Should converted text be accompanied by a layout switch in this app?
+    fn switches_layout(&self, app: &str) -> bool {
+        !self.no_switch.contains(app)
     }
 
     fn mode_for(&self, app: &str) -> AppMode {
@@ -60,6 +70,8 @@ pub struct Engine {
     after: AfterConvert,
     rules: Rules,
     mode: AppMode,
+    /// false in apps listed in `no_layout_switch_apps`
+    switch_layout: bool,
     keys: Bindings,
     /// languages that do not take part in auto-switching
     disabled_langs: HashSet<Lang>,
@@ -111,7 +123,9 @@ impl Engine {
 
     pub fn new(cfg: Config, keys: Bindings) -> Self {
         let rules = Rules::from_config(&cfg);
-        let mode = rules.mode_for(&os::foreground_app());
+        let app = os::foreground_app();
+        let mode = rules.mode_for(&app);
+        let switch_layout = rules.switches_layout(&app);
         state::set_app_mode(mode);
         Self {
             det: Arc::new(Detector::new(&cfg)),
@@ -120,6 +134,7 @@ impl Engine {
             busy: Arc::new(AtomicBool::new(false)),
             rules,
             mode,
+            switch_layout,
             keys,
             disabled_langs: parse_disabled(&cfg),
             swallowed: HashSet::new(),
@@ -151,8 +166,9 @@ impl Engine {
     fn refresh_app(&mut self) {
         let app = os::foreground_app();
         let mode = self.rules.mode_for(&app);
+        self.switch_layout = self.rules.switches_layout(&app);
         self.set_mode(mode);
-        log::debug!("app: {app:?}, mode: {mode:?}");
+        log::debug!("app: {app:?}, mode: {mode:?}, switch layout: {}", self.switch_layout);
     }
 
     /// Is this a hotkey? Some(true): the event was swallowed; None: not our key.
@@ -288,8 +304,9 @@ impl Engine {
         self.cycle = Some(Cycle { origin_text, origin, shown: target });
 
         let sounds = self.sounds.clone();
+        let to = if self.switch_layout { Some(target) } else { None };
         run_busy(&self.busy, move || {
-            os::replace_typed(erase, &out, target)?;
+            os::replace_typed(erase, &out, to)?;
             sounds.play(snd);
             Ok(())
         });
@@ -345,7 +362,8 @@ impl Engine {
     fn cycle_selection(&mut self) {
         let st = self.sel.clone();
         let sounds = self.sounds.clone();
-        let after = self.after;
+        let mut after = self.after;
+        after.switch_layout = self.switch_layout;
         run_busy(&self.busy, move || {
             os::convert_selection(after, move |sel, cur| {
                 let mut g = st.lock().unwrap_or_else(|p| p.into_inner());
@@ -381,6 +399,16 @@ mod tests {
         assert_eq!(r.mode_for("code.exe"), AppMode::NoAuto);
         assert_eq!(r.mode_for("notepad.exe"), AppMode::Normal);
         assert_eq!(r.mode_for(""), AppMode::Normal);
+    }
+
+    #[test]
+    fn layout_switching_can_be_turned_off_per_app() {
+        let mut cfg = Config::default();
+        cfg.no_layout_switch_apps = vec!["PhotoCraft.exe".into()];
+        let r = Rules::from_config(&cfg);
+        assert!(!r.switches_layout("photocraft.exe"));
+        assert!(r.switches_layout("notepad.exe"));
+        assert!(r.switches_layout(""));
     }
 
     #[test]

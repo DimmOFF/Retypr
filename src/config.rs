@@ -128,6 +128,13 @@ pub struct Config {
     pub auto_exclude_apps: Vec<String>,
     /// Apps where Retypr is completely silent (keys, including Pause, pass through untouched).
     pub disabled_apps: Vec<String>,
+    /// Apps where converted text is typed but the keyboard layout is NOT switched. A troubleshooting aid for apps
+    /// that react badly to layout-change requests.
+    pub no_layout_switch_apps: Vec<String>,
+    /// Windows: do not send layout-change requests to windows of winit-based apps (egui/eframe, ...). Those apps can
+    /// freeze for good when the layout is switched from outside (a known winit 0.30 bug, fixed in winit 0.31).
+    /// Detected by the window class name "Window Class". The text is still corrected.
+    pub skip_layout_switch_for_winit_apps: bool,
     /// Dictionary folder (absolute, or relative to the data folder). Default: <data>/dict
     pub dict_dir: Option<PathBuf>,
     pub sounds: SoundConfig,
@@ -146,6 +153,8 @@ impl Default for Config {
             disabled_languages: vec![],
             auto_exclude_apps: default_auto_exclude_apps(),
             disabled_apps: vec![],
+            no_layout_switch_apps: vec![],
+            skip_layout_switch_for_winit_apps: true,
             dict_dir: None,
             sounds: SoundConfig::default(),
             hotkeys: HotkeysConfig::default(),
@@ -368,6 +377,7 @@ mod tests {
         assert_eq!(c.sounds.on_selection_convert, "sounds/manual-switch.mp3");
         assert_eq!(c.sounds.on_rule_toggle, "");
         assert!(c.disabled_languages.is_empty());
+        assert!(c.skip_layout_switch_for_winit_apps);
     }
 
     #[test]

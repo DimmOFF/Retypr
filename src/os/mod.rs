@@ -10,6 +10,8 @@ pub struct AfterConvert {
     /// Restoring the selection / caret costs one keystroke per character. Texts longer than this are skipped
     /// (the caret then simply stays at the right end). 0 = no limit.
     pub max_chars: usize,
+    /// Switch the keyboard layout to the target one. False for apps in `no_layout_switch_apps`.
+    pub switch_layout: bool,
 }
 
 impl AfterConvert {
@@ -18,6 +20,7 @@ impl AfterConvert {
             keep_selection: c.select_after_convert,
             caret_left: c.caret_after_convert == crate::config::CaretSide::Left,
             max_chars: c.selection_restore_limit,
+            switch_layout: true,
         }
     }
 }
@@ -110,7 +113,7 @@ mod tests {
     use super::*;
 
     fn plan(keep: bool, left: bool, n: usize) -> Vec<Step> {
-        caret_plan(AfterConvert { keep_selection: keep, caret_left: left, max_chars: 0 }, n)
+        caret_plan(AfterConvert { keep_selection: keep, caret_left: left, max_chars: 0, switch_layout: true }, n)
     }
 
     #[test]
@@ -132,7 +135,7 @@ mod tests {
 
     #[test]
     fn long_texts_skip_the_fixup() {
-        let a = |max_chars| AfterConvert { keep_selection: true, caret_left: true, max_chars };
+        let a = |max_chars| AfterConvert { keep_selection: true, caret_left: true, max_chars, switch_layout: true };
         assert_eq!(caret_plan(a(10), 10).len(), 12); // at the limit: ShiftDown + 10 x Left + ShiftUp
         assert!(caret_plan(a(10), 11).is_empty()); // above it: nothing is pressed
         assert_eq!(caret_plan(a(0), 100_000).len(), 100_002); // 0 = no limit

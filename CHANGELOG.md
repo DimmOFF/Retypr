@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.6
+* **Freeze of winit-based apps (e.g. PhotoCraft) found and worked around.** Apps built on winit 0.30 freeze for good
+  when the keyboard layout is switched from outside (a known winit bug fixed in winit 0.31, rust-windowing/winit#4582);
+  any layout switcher triggers it. On Windows, Retypr no longer sends layout-change requests to windows of class
+  `Window Class` (winit's default class name) - the text is still corrected. Setting
+  `skip_layout_switch_for_winit_apps` (on by default, *Settings > Apps*).
+* Safety net: if the window that received a layout-change request stops responding for ~10 s, its app is added to
+  `no_layout_switch_apps` automatically and a message explains why.
+
+## 0.2.5
+* Be gentler with sensitive applications (one reported a hard freeze when auto-correction fired):
+  * a layout-change request is sent only when the layout really has to change, to the window that owns the keyboard
+    focus (a second request only if the focus belongs to another thread), and repeated at most once;
+  * corrected text is typed in small paced batches instead of one burst.
+* New per-app list **Don't switch the layout** (`no_layout_switch_apps`, Settings > Apps): the text is still
+  corrected but the layout is left alone - a quick way to find out whether an app dislikes layout-change requests.
+
 ## 0.2.4
 * Fix sounds that sometimes stopped playing until Retypr was restarted. The audio thread used to give up for good
   if no output device existed at start-up, and it never noticed a changed default device or a stream that had died

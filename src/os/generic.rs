@@ -94,13 +94,16 @@ pub fn switch_to(_id: LayoutId) -> Result<()> {
     }
 }
 
-pub fn replace_typed(erase: usize, text: &str, to: LayoutId) -> Result<()> {
+pub fn replace_typed(erase: usize, text: &str, to: Option<LayoutId>) -> Result<()> {
     let mut e = Enigo::new(&Settings::default())?;
     for _ in 0..erase {
         e.key(Key::Backspace, Direction::Click)?;
     }
     e.text(text)?;
-    switch_to(to)
+    match to {
+        Some(to) => switch_to(to),
+        None => Ok(()),
+    }
 }
 
 pub fn convert_selection<F>(after: AfterConvert, f: F) -> Result<()>
@@ -126,7 +129,9 @@ where
             e.key(Key::Unicode('v'), Direction::Click)?;
             e.key(modk, Direction::Release)?;
             sleep(Duration::from_millis(150));
-            let _ = switch_to(target);
+            if after.switch_layout {
+                let _ = switch_to(target);
+            }
             for step in caret_plan(after, conv.replace("\r\n", "\n").chars().count()) {
                 match step {
                     Step::ShiftDown => e.key(Key::Shift, Direction::Press)?,

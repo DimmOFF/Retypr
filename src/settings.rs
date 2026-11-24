@@ -624,6 +624,7 @@ struct App {
     all_keys: Vec<&'static str>,
     new_auto_app: String,
     new_disabled_app: String,
+    new_noswitch_app: String,
     exceptions: String,
     dict_infos: Infos,
     downloads: Downloads,
@@ -657,6 +658,7 @@ impl App {
             all_keys: hotkey::all_keys(),
             new_auto_app: String::new(),
             new_disabled_app: String::new(),
+            new_noswitch_app: String::new(),
             exceptions,
             dict_infos: Arc::new(Mutex::new(HashMap::new())),
             downloads: Arc::new(Mutex::new(HashMap::new())),
@@ -921,6 +923,25 @@ impl App {
             ui.label(weak(ui, "All keys (including Pause) pass through untouched. Good for games and remote desktops."));
             ui.add_space(4.0);
             app_list(ui, pal, "disabled", &mut self.cfg.disabled_apps, &mut self.new_disabled_app);
+        });
+        section(ui, "Don't switch the layout");
+        card(ui, pal, |ui| {
+            ui.label(weak(ui, "Text is still corrected, but the keyboard layout is left alone (switch it yourself). A troubleshooting aid for apps that react badly to layout-change requests."));
+            ui.add_space(4.0);
+            app_list(ui, pal, "noswitch", &mut self.cfg.no_layout_switch_apps, &mut self.new_noswitch_app);
+        });
+        #[cfg(windows)]
+        card(ui, pal, |ui| {
+            row(
+                ui,
+                "Skip layout switching in winit-based apps",
+                "Programs built on the winit library (egui/eframe apps such as PhotoCraft, Warp...) can freeze for good when the layout is switched from outside - a known winit 0.30 bug, fixed in winit 0.31. Retypr still corrects the text there but leaves the layout alone. Detected by the window class \"Window Class\".",
+                |ui| {
+                    toggle(ui, &mut self.cfg.skip_layout_switch_for_winit_apps);
+                },
+            );
+            ui.add_space(4.0);
+            ui.label(weak(ui, "If a program stops responding right after a layout change, Retypr adds it to the list above by itself."));
         });
     }
 
